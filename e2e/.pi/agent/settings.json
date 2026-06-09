@@ -1,0 +1,5 @@
+{
+  "extensions": ["../../../.pi/extensions/pi-claude-cli/index.ts"],
+  "defaultProvider": "pi-claude-cli",
+  "defaultModel": "claude-haiku-4-5"
+}

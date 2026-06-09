@@ -19,7 +19,7 @@ import {
   AssistantMessageEventStream,
   type Model,
   type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import {
   buildPrompt,
   buildSystemPrompt,

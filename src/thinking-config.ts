@@ -8,7 +8,7 @@
  * IMPORTANT: The CLI does NOT support --thinking-budget. Only --effort is supported.
  */
 
-import type { ThinkingLevel, ThinkingBudgets } from "@mariozechner/pi-ai";
+import type { ThinkingLevel, ThinkingBudgets } from "@earendil-works/pi-ai";
 
 /** CLI effort levels accepted by the --effort flag */
 export type CliEffortLevel = "low" | "medium" | "high" | "max";

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { mapThinkingEffort, isOpusModel } from "../src/thinking-config";
-import type { ThinkingBudgets } from "@mariozechner/pi-ai";
+import type { ThinkingBudgets } from "@earendil-works/pi-ai";
 
 describe("isOpusModel", () => {
   it("returns true for claude-opus-4-6-20260301", () => {

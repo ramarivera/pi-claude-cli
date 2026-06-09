@@ -35,6 +35,42 @@ Then select a Claude model via `/model` in the interactive UI. All Claude models
 - Cross-platform subprocess management (Windows, macOS, Linux)
 - Inactivity timeout and process registry for cleanup
 
+## Local development & testing
+
+This checkout is **live-loadable** without publishing to npm. A self-import shim
+re-exports the real entrypoint so `pi` can load the working tree directly:
+
+```
+.pi/extensions/pi-claude-cli/index.ts   ->  re-exports ../../../index.ts
+```
+
+Load only this checkout (and skip globally-installed packages, which would
+register a duplicate `pi-claude-cli` provider):
+
+```sh
+pi --no-extensions --extension ./.pi/extensions/pi-claude-cli/index.ts --list-models claude
+```
+
+### Tests
+
+```sh
+npm install            # installs cross-spawn + @earendil-works/pi-* types
+npm test               # unit tests (vitest) — no network
+npm run typecheck      # tsc --noEmit
+npm run test:e2e       # live e2e: spawns pi + Claude CLI, asserts a real reply
+```
+
+The e2e (`e2e/say-something.e2e.ts`) spawns a real `pi` process against the local
+shim, selects `pi-claude-cli/claude-haiku-4-5`, and asserts the model actually
+replies — guarding against the silent "empty response" failure mode. It requires
+an authenticated Claude Code CLI on PATH and is intentionally excluded from
+`npm test` (the `.e2e.ts` suffix is outside the unit glob). Override the model
+with `PI_CLAUDE_E2E_MODEL`.
+
+> Requires `pi` built on `@earendil-works/pi-ai` (0.7x+). This package's peer
+> dependencies target `@earendil-works/pi-*`; the legacy `@mariozechner/pi-*`
+> names are no longer used.
+
 ## License
 
 MIT

@@ -17,13 +17,15 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@mariozechner/pi-ai": "^0.52.0",
-    "@mariozechner/pi-coding-agent": "^0.52.0"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
   },
   "dependencies": {
     "cross-spawn": "^7.0.6"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
     "@eslint/js": "^9.39.4",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.0.0",
@@ -48,6 +50,7 @@
   },
   "scripts": {
     "test": "vitest run --reporter=verbose",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
