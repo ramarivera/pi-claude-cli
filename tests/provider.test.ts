@@ -1880,8 +1880,14 @@ describe("streamViaCli", () => {
     });
   });
 
-  describe("session resume via options.sessionId", () => {
-    it("passes --resume when sessionId option is provided on subsequent turn", async () => {
+  describe("stateless replay (no session resume)", () => {
+    // We never use `claude --resume`: pi sends the full conversation history
+    // every turn, so we replay it as a fresh stateless prompt. Resuming was
+    // brittle — pi's sessionId does not reliably map to a stored CLI session,
+    // so `--resume <id>` produced `error_during_execution` ("No conversation
+    // found with session ID: ...") on resumed pi sessions.
+
+    it("never passes --resume, even with sessionId on a multi-turn context", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [
@@ -1895,9 +1901,7 @@ describe("streamViaCli", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
-      expect(args).toContain("--resume");
-      const idx = args.indexOf("--resume");
-      expect(args[idx + 1]).toBe("sess-abc-123");
+      expect(args).not.toContain("--resume");
 
       // Clean up
       const proc = (spawn as any).mock.results[0].value;
@@ -1905,7 +1909,7 @@ describe("streamViaCli", () => {
       await vi.advanceTimersByTimeAsync(100);
     });
 
-    it("passes --session-id on first turn when sessionId provided", async () => {
+    it("never passes --session-id (CLI auto-generates an ephemeral session)", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [{ role: "user", content: "Hello" }],
@@ -1916,9 +1920,7 @@ describe("streamViaCli", () => {
 
       const args = (spawn as any).mock.calls[0][1] as string[];
       expect(args).not.toContain("--resume");
-      expect(args).toContain("--session-id");
-      const idx = args.indexOf("--session-id");
-      expect(args[idx + 1]).toBe("sess-new");
+      expect(args).not.toContain("--session-id");
 
       // Clean up
       const proc = (spawn as any).mock.results[0].value;
@@ -1926,7 +1928,7 @@ describe("streamViaCli", () => {
       await vi.advanceTimersByTimeAsync(100);
     });
 
-    it("does not pass --resume or --session-id when no sessionId option", async () => {
+    it("does not pass session flags when no sessionId option", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [{ role: "user", content: "Hello" }],
@@ -1945,7 +1947,7 @@ describe("streamViaCli", () => {
       await vi.advanceTimersByTimeAsync(100);
     });
 
-    it("uses buildResumePrompt when sessionId is provided (sends only new content)", async () => {
+    it("sends the FULL flattened history every turn (not just the new content)", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [
@@ -1961,15 +1963,16 @@ describe("streamViaCli", () => {
       const proc = (spawn as any).mock.results[0].value;
       const written = proc.stdin.write.mock.calls[0][0] as string;
       const parsed = JSON.parse(written.trim());
-      // Should only contain the latest user message, not full history
-      expect(parsed.message.content).toBe("follow-up");
+      // Full history is replayed: earlier turns must be present, not dropped.
+      expect(parsed.message.content).toContain("first message");
+      expect(parsed.message.content).toContain("follow-up");
 
       // Clean up
       proc.stdout.end();
       await vi.advanceTimersByTimeAsync(100);
     });
 
-    it("does not pass system prompt when resuming", async () => {
+    it("passes the system prompt every turn (sessionId present)", async () => {
       const model = mockModels[0] as any;
       const context = {
         messages: [
@@ -1984,13 +1987,47 @@ describe("streamViaCli", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       const args = (spawn as any).mock.calls[0][1] as string[];
-      expect(args).toContain("--resume");
-      expect(args).not.toContain("--append-system-prompt");
+      expect(args).not.toContain("--resume");
+      expect(args).toContain("--append-system-prompt");
 
       // Clean up
       const proc = (spawn as any).mock.results[0].value;
       proc.stdout.end();
       await vi.advanceTimersByTimeAsync(100);
+    });
+  });
+
+  describe("error result detail (errors array)", () => {
+    it("surfaces the CLI `errors` array (e.g. missing session) in the error text", async () => {
+      const model = mockModels[0] as any;
+      const context = { messages: [{ role: "user", content: "test 1 2 3" }] };
+
+      streamViaCli(model, context, { sessionId: "sess-x" } as any);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const proc = (spawn as any).mock.results[0].value;
+      proc.stdout.write(
+        JSON.stringify({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: ["No conversation found with session ID: sess-x"],
+        }) + "\n",
+      );
+      proc.stdout.end();
+      await vi.advanceTimersByTimeAsync(100);
+
+      const mockStream = MockAssistantMessageEventStream.mock.instances[0];
+      const doneEvent = mockStream._events.find(
+        (e: any) => e.type === "done" && e.message,
+      );
+      expect(doneEvent).toBeDefined();
+      const text = (doneEvent.message.content ?? [])
+        .map((c: any) => c.text ?? "")
+        .join(" ");
+      // Actionable detail from the `errors` array, not the opaque subtype.
+      expect(text).toContain("No conversation found with session ID: sess-x");
+      expect(text).not.toContain("(error_during_execution)");
     });
   });
 });

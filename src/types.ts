@@ -18,6 +18,9 @@ export interface ClaudeResultMessage {
   api_error_status?: string | null;
   result?: string;
   error?: string;
+  // Claude Code reports failure detail as an `errors` array (e.g.
+  // ["No conversation found with session ID: ..."]), not a singular `error`.
+  errors?: string[];
   session_id?: string;
 }
 

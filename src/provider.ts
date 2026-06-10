@@ -20,11 +20,7 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import {
-  buildPrompt,
-  buildSystemPrompt,
-  buildResumePrompt,
-} from "./prompt-builder.js";
+import { buildPrompt, buildSystemPrompt } from "./prompt-builder.js";
 import {
   spawnClaude,
   writeUserMessage,
@@ -40,6 +36,7 @@ import { handleControlRequest } from "./control-handler.js";
 import { mapThinkingEffort } from "./thinking-config.js";
 import { isPiKnownClaudeTool } from "./tool-mapping.js";
 import type { ClaudeResultMessage } from "./types.js";
+import { debugLog } from "./logger.js";
 /** Inactivity timeout: kill subprocess if no stdout for 180 seconds (3 minutes). */
 const INACTIVITY_TIMEOUT_MS = 180_000;
 
@@ -62,6 +59,10 @@ function isErrorResult(msg: ClaudeResultMessage): boolean {
 function describeResultError(msg: ClaudeResultMessage): string {
   const detail =
     msg.error ||
+    // Claude Code surfaces failure detail as an `errors` array, e.g.
+    // ["No conversation found with session ID: ..."]. Prefer it over the
+    // opaque subtype so the message is actually actionable.
+    (msg.errors?.length ? msg.errors.join("; ") : "") ||
     (msg.api_error_status ? `api_error_status=${msg.api_error_status}` : "") ||
     (msg.subtype && msg.subtype !== "success" ? msg.subtype : "") ||
     "unknown error";
@@ -107,22 +108,21 @@ export function streamViaCli(
     try {
       const cwd = options?.cwd ?? process.cwd();
 
-      // Resume if pi provides a session ID AND this isn't the first turn.
-      // Pi passes sessionId on every call (including first), but we can only
-      // --resume a CLI session that already exists on disk from a prior turn.
-      const resumeSessionId =
-        options?.sessionId && context.messages.length > 1
-          ? options.sessionId
-          : undefined;
-
-      // Build prompt: if resuming, only send the latest user turn;
-      // otherwise build the full flattened conversation history
-      const prompt = resumeSessionId
-        ? buildResumePrompt(context)
-        : buildPrompt(context);
-      const systemPrompt = resumeSessionId
-        ? undefined
-        : buildSystemPrompt(context, cwd);
+      // We deliberately do NOT use `claude --resume`. pi sends the full
+      // conversation history in `context.messages` on every turn, so we replay
+      // it as a fresh stateless prompt each time. Resuming was driven by a
+      // `messages.length > 1` heuristic that guessed a CLI session existed on
+      // disk — but pi's sessionId does not reliably map to a stored CLI
+      // session (e.g. when a pi session is *resumed* in a new process). A miss
+      // makes the CLI emit `error_during_execution`
+      // ("No conversation found with session ID: ..."). Break-early SIGKILL
+      // also leaves resumed sessions ending in a dangling tool_use, which the
+      // API rejects. Full replay sidesteps both failure modes. We also omit
+      // --session-id: passing pi's id on every turn collides on turn 2
+      // ("Session ID ... is already in use"); letting the CLI auto-generate an
+      // ephemeral session per turn is correct and conflict-free.
+      const prompt = buildPrompt(context);
+      const systemPrompt = buildSystemPrompt(context, cwd);
 
       // Compute effort level from reasoning options
       const effort = mapThinkingEffort(
@@ -131,14 +131,24 @@ export function streamViaCli(
         options?.thinkingBudgets,
       );
 
-      // Spawn subprocess
+      debugLog("spawn:request", {
+        modelId: model.id,
+        cwd,
+        sessionId: options?.sessionId,
+        messageCount: context.messages.length,
+        hasSystemPrompt: !!systemPrompt,
+        effort,
+        hasMcpConfig: !!options?.mcpConfigPath,
+        promptKind: typeof prompt === "string" ? "text" : "blocks",
+        promptLength: prompt.length,
+      });
+
+      // Spawn subprocess (stateless: no --resume, no fixed --session-id)
       proc = spawnClaude(model.id, systemPrompt || undefined, {
         cwd,
         signal: options?.signal,
         effort,
         mcpConfigPath: options?.mcpConfigPath,
-        resumeSessionId,
-        newSessionId: !resumeSessionId ? options?.sessionId : undefined,
       });
       const getStderr = captureStderr(proc);
 
@@ -230,12 +240,14 @@ export function streamViaCli(
       proc.on("error", (err: Error) => {
         if (broken) return; // Break-early killed the process intentionally
         const stderr = getStderr();
+        debugLog("subprocess:error", { message: err.message, stderr });
         endStreamWithError(stderr || err.message);
       });
 
       // Handle subprocess close -- surface crashes with stderr and exit code
-      proc.on("close", (code: number | null, _signal: string | null) => {
+      proc.on("close", (code: number | null, signal: string | null) => {
         clearTimeout(inactivityTimer);
+        debugLog("subprocess:close", { code, signal, broken });
         if (broken) return; // Break-early kill, expected
         if (code !== 0 && code !== null) {
           const stderr = getStderr();
@@ -292,6 +304,7 @@ export function streamViaCli(
           ) {
             broken = true; // Set guard BEFORE rl.close() to prevent buffered lines
             clearTimeout(inactivityTimer);
+            debugLog("break-early", { reason: "saw built-in/custom tool_use" });
             // Pi will execute these tools. Kill subprocess to prevent CLI from executing them.
             forceKillProcess(proc!);
             rl.close();
@@ -300,6 +313,13 @@ export function streamViaCli(
         } else if (msg.type === "control_request") {
           handleControlRequest(msg, proc!.stdin!);
         } else if (msg.type === "result") {
+          debugLog("result", {
+            subtype: msg.subtype,
+            isError: msg.is_error,
+            apiErrorStatus: msg.api_error_status ?? undefined,
+            errors: msg.errors,
+            error: msg.error,
+          });
           if (isErrorResult(msg)) {
             endStreamWithError(describeResultError(msg));
           }
@@ -334,6 +354,14 @@ export function streamViaCli(
         const hasContent = (output.content?.length ?? 0) > 0;
         const hasUsage = (output.usage?.totalTokens ?? 0) > 0;
 
+        debugLog("stream:done", {
+          hasContent,
+          hasUsage,
+          stopReason: output.stopReason,
+          rateLimited,
+          contentBlocks: output.content?.length ?? 0,
+        });
+
         if (!hasContent && !hasUsage) {
           endStreamWithError(
             rateLimited
@@ -367,6 +395,9 @@ export function streamViaCli(
         }
       }
     } catch (err: any) {
+      debugLog("streamViaCli:catch", {
+        message: err?.message ?? String(err),
+      });
       stream.push({
         type: "error",
         reason: "error",
