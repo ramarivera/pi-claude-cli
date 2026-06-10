@@ -289,6 +289,100 @@ describe("streamViaCli", () => {
     expect(mockStream.end).toHaveBeenCalled();
   });
 
+  it("treats a result with is_error/non-success subtype as an error (real Claude Code shape)", async () => {
+    const model = mockModels[0] as any;
+    const context = { messages: [{ role: "user", content: "Hello" }] };
+
+    streamViaCli(model, context);
+    await vi.advanceTimersByTimeAsync(0);
+    const proc = (spawn as any).mock.results[0].value;
+
+    // Claude Code never emits a literal subtype "error": failures look like
+    // this. The old `subtype === "error"` check missed them entirely.
+    proc.stdout.write(
+      JSON.stringify({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        error: "Overloaded",
+      }) + "\n",
+    );
+    proc.stdout.end();
+    await vi.advanceTimersByTimeAsync(100);
+
+    const mockStream = MockAssistantMessageEventStream.mock.instances[0];
+    const doneEvent = mockStream._events.find(
+      (e: any) => e.type === "done" && e.message,
+    );
+    expect(doneEvent).toBeDefined();
+    const text = (doneEvent.message.content ?? [])
+      .map((c: any) => c.text ?? "")
+      .join(" ");
+    expect(text).toContain("Overloaded");
+    expect(mockStream.end).toHaveBeenCalled();
+  });
+
+  it("surfaces an empty response (no content, no usage) instead of a silent stop", async () => {
+    const model = mockModels[0] as any;
+    const context = { messages: [{ role: "user", content: "Hello" }] };
+
+    streamViaCli(model, context);
+    await vi.advanceTimersByTimeAsync(0);
+    const proc = (spawn as any).mock.results[0].value;
+
+    // A "success" result with no preceding stream_event content: the bridge
+    // captured nothing and zero tokens were billed — the turn never ran. This
+    // is exactly the ghost-message failure mode.
+    proc.stdout.write(
+      JSON.stringify({ type: "result", subtype: "success" }) + "\n",
+    );
+    proc.stdout.end();
+    await vi.advanceTimersByTimeAsync(100);
+
+    const mockStream = MockAssistantMessageEventStream.mock.instances[0];
+    const doneEvent = mockStream._events.find(
+      (e: any) => e.type === "done" && e.message,
+    );
+    expect(doneEvent).toBeDefined();
+    const text = (doneEvent.message.content ?? [])
+      .map((c: any) => c.text ?? "")
+      .join(" ");
+    expect(text.toLowerCase()).toContain("empty response");
+    expect(mockStream.end).toHaveBeenCalled();
+  });
+
+  it("explains an empty turn as a rate limit when rate_limit_event is not allowed", async () => {
+    const model = mockModels[0] as any;
+    const context = { messages: [{ role: "user", content: "Hello" }] };
+
+    streamViaCli(model, context);
+    await vi.advanceTimersByTimeAsync(0);
+    const proc = (spawn as any).mock.results[0].value;
+
+    proc.stdout.write(
+      JSON.stringify({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "blocked", rateLimitType: "five_hour" },
+      }) + "\n",
+    );
+    proc.stdout.write(
+      JSON.stringify({ type: "result", subtype: "success" }) + "\n",
+    );
+    proc.stdout.end();
+    await vi.advanceTimersByTimeAsync(100);
+
+    const mockStream = MockAssistantMessageEventStream.mock.instances[0];
+    const doneEvent = mockStream._events.find(
+      (e: any) => e.type === "done" && e.message,
+    );
+    expect(doneEvent).toBeDefined();
+    const text = (doneEvent.message.content ?? [])
+      .map((c: any) => c.text ?? "")
+      .join(" ");
+    expect(text.toLowerCase()).toContain("rate limit");
+    expect(mockStream.end).toHaveBeenCalled();
+  });
+
   it("calls cleanupProcess after receiving result", async () => {
     const model = mockModels[0] as any;
     const context = {

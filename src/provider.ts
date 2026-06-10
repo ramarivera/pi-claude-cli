@@ -39,8 +39,34 @@ import { createEventBridge } from "./event-bridge.js";
 import { handleControlRequest } from "./control-handler.js";
 import { mapThinkingEffort } from "./thinking-config.js";
 import { isPiKnownClaudeTool } from "./tool-mapping.js";
+import type { ClaudeResultMessage } from "./types.js";
 /** Inactivity timeout: kill subprocess if no stdout for 180 seconds (3 minutes). */
 const INACTIVITY_TIMEOUT_MS = 180_000;
+
+/**
+ * A Claude CLI `result` message represents a failure when it is not an explicit
+ * success. Claude Code never emits a literal `subtype: "error"`; real failures
+ * surface as `is_error: true`, an `api_error_status`, or an error subtype such
+ * as `error_during_execution` / `error_max_turns`. The original `=== "error"`
+ * check matched none of these, so CLI errors were silently treated as success.
+ */
+function isErrorResult(msg: ClaudeResultMessage): boolean {
+  return (
+    msg.is_error === true ||
+    msg.subtype !== "success" ||
+    (msg.api_error_status != null && msg.api_error_status !== "")
+  );
+}
+
+/** Build a human-readable reason string from an errored `result` message. */
+function describeResultError(msg: ClaudeResultMessage): string {
+  const detail =
+    msg.error ||
+    (msg.api_error_status ? `api_error_status=${msg.api_error_status}` : "") ||
+    (msg.subtype && msg.subtype !== "success" ? msg.subtype : "") ||
+    "unknown error";
+  return `Claude CLI returned an error result (${detail})`;
+}
 
 /** Extended stream options: pi's SimpleStreamOptions plus optional cwd and mcpConfigPath */
 type StreamViaCLiOptions = SimpleStreamOptions & {
@@ -189,6 +215,9 @@ export function streamViaCli(
       let sawBuiltInOrCustomTool = false;
       // Guard against buffered readline lines firing after rl.close()
       let broken = false;
+      // Set when the CLI reports it is throttled, so an empty turn can be
+      // explained as a rate limit rather than a generic empty response.
+      let rateLimited = false;
 
       // Set up readline for line-by-line NDJSON parsing
       const rl = createInterface({
@@ -271,13 +300,18 @@ export function streamViaCli(
         } else if (msg.type === "control_request") {
           handleControlRequest(msg, proc!.stdin!);
         } else if (msg.type === "result") {
-          if (msg.subtype === "error") {
-            endStreamWithError(msg.error ?? "Unknown error from Claude CLI");
+          if (isErrorResult(msg)) {
+            endStreamWithError(describeResultError(msg));
           }
           // For both success and error: clean up the subprocess
           clearTimeout(inactivityTimer);
           cleanupProcess(proc!);
           rl.close();
+        } else if (msg.type === "rate_limit_event") {
+          const status = msg.rate_limit_info?.status;
+          if (status && status !== "allowed") {
+            rateLimited = true;
+          }
         }
       });
 
@@ -292,29 +326,45 @@ export function streamViaCli(
       if (!streamEnded) {
         const output = bridge.getOutput();
 
-        // If stopReason is toolUse but there are no pi-known tool calls in content,
-        // it means only user MCP tools were called (filtered by event bridge).
-        // Override to "stop" so pi doesn't try to execute non-existent tools.
-        const piToolCalls = (output.content || []).filter(
-          (c: any) => c.type === "toolCall",
-        );
-        const effectiveReason =
-          output.stopReason === "toolUse" && piToolCalls.length === 0
-            ? "stop"
-            : output.stopReason;
+        // Empty-response guard: if the bridge captured no content AND the turn
+        // billed zero tokens, the Claude CLI never actually produced an
+        // assistant turn (rate limit, overload, dropped/unrecognized output).
+        // Surface that instead of emitting a silent successful empty "stop" —
+        // the failure mode that makes pi look like it "did nothing".
+        const hasContent = (output.content?.length ?? 0) > 0;
+        const hasUsage = (output.usage?.totalTokens ?? 0) > 0;
 
-        streamEnded = true;
-        stream.push({
-          type: "done",
-          reason:
-            effectiveReason === "toolUse"
-              ? "toolUse"
-              : effectiveReason === "length"
-                ? "length"
-                : "stop",
-          message: { ...output, stopReason: effectiveReason },
-        });
-        stream.end();
+        if (!hasContent && !hasUsage) {
+          endStreamWithError(
+            rateLimited
+              ? "Claude CLI produced no output (rate limit reached). Try again later or pick another model."
+              : "Claude CLI produced an empty response (no content, no token usage) — likely an upstream error, overload, or rate limit.",
+          );
+        } else {
+          // If stopReason is toolUse but there are no pi-known tool calls in content,
+          // it means only user MCP tools were called (filtered by event bridge).
+          // Override to "stop" so pi doesn't try to execute non-existent tools.
+          const piToolCalls = (output.content || []).filter(
+            (c: any) => c.type === "toolCall",
+          );
+          const effectiveReason =
+            output.stopReason === "toolUse" && piToolCalls.length === 0
+              ? "stop"
+              : output.stopReason;
+
+          streamEnded = true;
+          stream.push({
+            type: "done",
+            reason:
+              effectiveReason === "toolUse"
+                ? "toolUse"
+                : effectiveReason === "length"
+                  ? "length"
+                  : "stop",
+            message: { ...output, stopReason: effectiveReason },
+          });
+          stream.end();
+        }
       }
     } catch (err: any) {
       stream.push({

@@ -9,9 +9,26 @@ export interface ClaudeStreamEventMessage {
 
 export interface ClaudeResultMessage {
   type: "result";
-  subtype: "success" | "error";
+  // Claude Code emits "success" plus error subtypes such as
+  // "error_during_execution" and "error_max_turns" — never a literal "error".
+  // Treat anything that is not "success" (or is_error/api_error_status set) as
+  // a failure.
+  subtype: string;
+  is_error?: boolean;
+  api_error_status?: string | null;
   result?: string;
   error?: string;
+  session_id?: string;
+}
+
+export interface ClaudeRateLimitEventMessage {
+  type: "rate_limit_event";
+  rate_limit_info?: {
+    status?: string; // "allowed" when within limits; otherwise throttled/blocked
+    rateLimitType?: string;
+    resetsAt?: number;
+    overageStatus?: string;
+  };
   session_id?: string;
 }
 
@@ -35,6 +52,7 @@ export interface ClaudeControlRequest {
 export type NdjsonMessage =
   | ClaudeStreamEventMessage
   | ClaudeResultMessage
+  | ClaudeRateLimitEventMessage
   | ClaudeSystemMessage
   | ClaudeControlRequest;
 
