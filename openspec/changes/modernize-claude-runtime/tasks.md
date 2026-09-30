@@ -38,7 +38,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Delta/full assistant dedupe, typed error/result mapping, usage and attributed retry/limit/task/status events pass state regression tests; one terminal outcome per turn; unknown event policy preserves diagnostics.
 
-- [ ] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
+- [x] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
   - Capabilities: `session-lifecycle`, `host-tool-handoff`.
   - Blocked by: `pcc-core-events`.
   - Acceptance: Correlate multiple tool results by ID, invalidate changed driver/cwd/history/schema/branch state, settle channels and isolate concurrent sessions; abort/result/EOF and shutdown/reload races pass; no global cache/state.
@@ -50,7 +50,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Correct prompt-file flag/cwd/argv/env, bidirectional NDJSON, fragmented UTF-8/lines and EPIPE/EOF/stderr/exit errors; drain/timeout/signal cleanup and per-request resources pass deterministic child-process tests.
 
-- [ ] 3.2 Implement CLI payload and interaction normalization (`pcc-cli-control`; lane `cli`; 100 min).
+- [x] 3.2 Implement CLI payload and interaction normalization (`pcc-cli-control`; lane `cli`; 100 min).
   - Capabilities: `cli-driver`, `claude-event-contract`, `host-tool-handoff`.
   - Blocked by: `pcc-cli-process`.
   - Acceptance: Correct nested control request IDs and updated input; subtype dispatch, explicit unsupported requests, complete result/error variants and configured tasks/full-message families; deterministic host execution handoff; emit contract DTOs.
@@ -62,7 +62,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Official query executable/model/env options, inherited Claude login default, explicit API-key mode without hidden billing overrides, authoritative session IDs and callbacks, interrupt/close; lazy import allows CLI-only load; dependency transport never direct HTTP imitation.
 
-- [ ] 4.2 Implement parked SDK MCP tool-result continuity (`pcc-sdk-handoff`; lane `sdk`; 100 min).
+- [x] 4.2 Implement parked SDK MCP tool-result continuity (`pcc-sdk-handoff`; lane `sdk`; 100 min).
   - Capabilities: `sdk-driver`, `host-tool-handoff`, `session-lifecycle`.
   - Blocked by: `pcc-sdk-query`.
   - Acceptance: Expose native host schemas without lossy conversion, disable duplicate Claude native execution for host-owned tools, parked calls matched by IDs across host rounds, parallel/unordered results and cancellations settled; guarded persistence/steering capabilities with contract assumptions documented.
