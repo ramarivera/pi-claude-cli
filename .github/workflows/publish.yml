@@ -59,12 +59,13 @@ jobs:
       id-token: write
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ needs.prepare.outputs.commit }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -81,7 +82,9 @@ jobs:
           '
       - name: Validate release identity and main ancestry
         run: |
-          test "$(git rev-parse HEAD)" = "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RELEASE_COMMIT" = "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
           git merge-base --is-ancestor HEAD origin/main
           node --input-type=module <<'NODE'
           import assert from "node:assert/strict";
@@ -93,14 +96,20 @@ jobs:
           assert.equal(pkg.repository.url, `https://github.com/${process.env.GITHUB_REPOSITORY}`, "npm repository must match OIDC repository");
           NODE
       - run: npm ci
-      - name: Pack and publish with npm trusted publishing
+      - name: Prove package matches the immutable tag and publish with OIDC
         run: |
-          SCRATCH="$HOME/dev/agentic-scratchpads/pi-claude-cli/release"
-          mkdir -p "$SCRATCH"
-          npm pack --pack-destination "$SCRATCH" --json > "$SCRATCH/pack.json"
-          PACKAGE_FILE=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; console.log(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$SCRATCH/pack.json")
-          GITHUB_REF="refs/tags/$RELEASE_TAG" GITHUB_SHA="$(git rev-parse HEAD)" \
-            npm publish "$SCRATCH/$PACKAGE_FILE" --access public
+          SCRATCH="$HOME/dev/agentic-scratchpads/pi-claude-cli/release/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$SCRATCH/source" "$SCRATCH/tag-pack"
+          git worktree add --detach "$SCRATCH/tag" "$RELEASE_COMMIT"
+          npm pack --ignore-scripts --pack-destination "$SCRATCH/source" --json > "$SCRATCH/source/pack.json"
+          (
+            cd "$SCRATCH/tag"
+            npm pack --ignore-scripts --pack-destination "$SCRATCH/tag-pack" --json > "$SCRATCH/tag-pack/pack.json"
+          )
+          PACKAGE_FILE=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; console.log(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$SCRATCH/source/pack.json")
+          TAG_PACKAGE_FILE=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; console.log(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$SCRATCH/tag-pack/pack.json")
+          cmp "$SCRATCH/source/$PACKAGE_FILE" "$SCRATCH/tag-pack/$TAG_PACKAGE_FILE"
+          npm publish "$SCRATCH/source/$PACKAGE_FILE" --access public
 
   release:
     needs: [prepare, publish]
