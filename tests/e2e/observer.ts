@@ -19,6 +19,34 @@ export function response(
   });
 }
 
+export function systemPrompt(stage: string, value: unknown): void {
+  const marker = process.env.PCC_E2E_SYSTEM_MARKER;
+  const parts =
+    typeof value === "string"
+      ? [value]
+      : Array.isArray(value) && value.every((part) => typeof part === "string")
+        ? value
+        : undefined;
+  record("system-prompt", {
+    stage,
+    available: parts !== undefined,
+    markerConfigured: Boolean(marker),
+    markerIncluded: Boolean(
+      marker && parts?.some((part) => part.includes(marker)),
+    ),
+    length: parts?.join("\n\n").length,
+    parts: parts?.length,
+  });
+}
+
+export function providerPrompt(payload: unknown): void {
+  const prompt =
+    typeof payload === "object" && payload !== null && "systemPrompt" in payload
+      ? payload.systemPrompt
+      : undefined;
+  systemPrompt("before_provider_request", prompt);
+}
+
 let calls = 0;
 export async function sentinel(toolCallId: string) {
   const nonce = process.env.PCC_E2E_NONCE;

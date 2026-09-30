@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { textProof } from "./diagnostics.mjs";
 import {
   CASES,
   MODEL,
@@ -136,17 +137,6 @@ function checkCorrelation(messages, sentinelCall, driver, hostKind, events) {
   }
 }
 
-function textProof(text, marker, expected) {
-  assert.ok(
-    text.includes(marker),
-    "Distinctive actual system prompt wasn't honored",
-  );
-  assert.ok(
-    text.includes(expected),
-    `Assistant didn't use the expected synthetic value: ${expected}`,
-  );
-}
-
 async function abortInference(rpc, hostKind) {
   const since = rpc.frames.length;
   const id = rpc.send("prompt", {
@@ -267,6 +257,7 @@ for (const name of CASES) {
         const marker = `SYSTEM-${randomUUID()}`;
         const system = `For this synthetic sandbox E2E, begin every final answer with ${marker}. Obey the user's exact tool instructions. Never inspect other files, credentials, account settings, or network resources. Use only the offered host tools.`;
         const env = hostEnvironment(hostKind, driver, sandbox, nonce);
+        env.PCC_E2E_SYSTEM_MARKER = marker;
         receipt.versions = preflight(hostKind, env);
         receipt.budgets = {
           maxTurns: 8,
@@ -293,7 +284,8 @@ for (const name of CASES) {
         });
         receipt.selection = await select(rpc, name);
         rpc.rememberBaseline();
-        const first = "No tools. Reply with the exact word READY.";
+        const first =
+          "No tools. Follow the system-required prefix, then reply with READY.";
         receipt.prompts.push(first);
         textProof(await rpc.prompt(hostKind, first), marker, "READY");
         const originalId = responseIds(
@@ -386,6 +378,8 @@ for (const name of CASES) {
           phase: "resident",
           commands: rpc.commands,
           eventTypes: rpc.frames.map((frame) => frame.type),
+          responses: rpc.responses,
+          assistantMessages: rpc.assistantMessages(),
         });
         const closed = await rpc.close();
         receipt.cleanup.push(closed);
@@ -447,7 +441,8 @@ for (const name of CASES) {
         receipt.phases.toolAbort.cleanup = await rpc.transportIdle(
           join(sandbox, "t"),
         );
-        const proof = "No tools. Reply with the exact word AFTER_ABORT.";
+        const proof =
+          "No tools. Follow the system-required prefix, then reply with AFTER_ABORT.";
         receipt.prompts.push(proof);
         textProof(await rpc.prompt(hostKind, proof), marker, "AFTER_ABORT");
         receipt.phases.afterAbort = { completed: true };
@@ -476,6 +471,8 @@ for (const name of CASES) {
         failure = error;
         receipt.status = "failed";
         receipt.failure = { name: error.name, message: error.message };
+        receipt.lastResponse = rpc?.responses.at(-1);
+        receipt.stats ??= receipt.lastResponse?.stats;
       } finally {
         try {
           if (rpc) {
@@ -483,6 +480,8 @@ for (const name of CASES) {
               phase: receipt.phases.restoration ? "restored" : "interrupted",
               commands: rpc.commands,
               eventTypes: rpc.frames.map((frame) => frame.type),
+              responses: rpc.responses,
+              assistantMessages: rpc.assistantMessages(),
             });
             const closed = await rpc.close();
             receipt.cleanup.push(closed);
