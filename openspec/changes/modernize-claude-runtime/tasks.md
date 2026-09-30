@@ -38,7 +38,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Delta/full assistant dedupe, typed error/result mapping, usage and attributed retry/limit/task/status events pass state regression tests; one terminal outcome per turn; unknown event policy preserves diagnostics.
 
-- [ ] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
+- [x] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
   - Capabilities: `session-lifecycle`, `host-tool-handoff`.
   - Blocked by: `pcc-core-events`.
   - Acceptance: Correlate multiple tool results by ID, invalidate changed driver/cwd/history/schema/branch state, settle channels and isolate concurrent sessions; abort/result/EOF and shutdown/reload races pass; no global cache/state.
@@ -62,7 +62,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Official query executable/model/env options, inherited Claude login default, explicit API-key mode without hidden billing overrides, authoritative session IDs and callbacks, interrupt/close; lazy import allows CLI-only load; dependency transport never direct HTTP imitation.
 
-- [ ] 4.2 Implement parked SDK MCP tool-result continuity (`pcc-sdk-handoff`; lane `sdk`; 100 min).
+- [x] 4.2 Implement parked SDK MCP tool-result continuity (`pcc-sdk-handoff`; lane `sdk`; 100 min).
   - Capabilities: `sdk-driver`, `host-tool-handoff`, `session-lifecycle`.
   - Blocked by: `pcc-sdk-query`.
   - Acceptance: Expose native host schemas without lossy conversion, disable duplicate Claude native execution for host-owned tools, parked calls matched by IDs across host rounds, parallel/unordered results and cancellations settled; guarded persistence/steering capabilities with contract assumptions documented.
@@ -115,7 +115,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-core-session`, `pcc-cli-control`, `pcc-sdk-handoff`, `pcc-pi-life`, `pcc-omp-life`, `pcc-e2e-harness`.
   - Acceptance: Root entrypoint shims and Pi/OMP discovery manifests select same neutral core+config driver; existing provider ID/root entrypoint retained; legacy migration excluded; replace old tests only with mapped equivalent/improved coverage; inspect every lane diff and receipts; no overlapping shared-file mutations.
 
-- [ ] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
+- [x] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-cutover`.
   - Acceptance: Lint/typecheck/unit/replay/process/contract suites fresh green for declared host versions; resolve hooks/failures without silencing tests/any; compare coverage inventory, module import isolation and no orphan children/temp resources; record commands and hashes.
@@ -125,12 +125,12 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-start`.
   - Acceptance: Human completes own Claude login if absent, account/auth/billing source and bounded test usage agreed, installed supported CLI/hosts and writable isolated session roots confirmed without copying tokens; no secrets in chat or fixtures. Existing cost acknowledgement retained; only missing specifics requested before live execution.
 
-- [ ] 8.4 Execute all four authenticated host and driver E2E combinations (`pcc-live`; lane `integration`; 100 min).
+- [x] 8.4 Execute all four authenticated host and driver E2E combinations (`pcc-live`; lane `integration`; 100 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-offline`, `pcc-live-access`.
   - Acceptance: Run SDK+Pi, CLI+Pi, SDK+OMP, CLI+OMP with actual authenticated Claude; semantic tools/output/resume/cancel/resource assertions and usage receipts; skipped/blocked combinations prevent implementation completion; every failure fixed or explicit incomplete.
 
-- [ ] 8.5 Finalize compatibility and verification documentation (`pcc-docs`; lane `integration`; 60 min).
+- [x] 8.5 Finalize compatibility and verification documentation (`pcc-docs`; lane `integration`; 60 min).
   - Capabilities: `pi-adapter`, `omp-adapter`, `verification-suite`, `sdk-driver`, `cli-driver`.
   - Blocked by: `pcc-live`.
   - Acceptance: Document tested release matrix, entrypoint/driver/auth choice and differences, current supported behavior and excluded legacy migration, installed-vs-source evidence and live tests; spec/tasks/bead evidence synchronized by coordinator; no publish/deploy/commit without session authorization.

@@ -22,3 +22,11 @@ Same-process continuation retains the resident Claude identity. Imported or chan
 Provider payload callbacks receive the host-neutral request. Transport response observations use status `0` and transport metadata for these subprocess/query transports; they don't invent an HTTP response. Error/abort results carry each host's actual assistant-message shape.
 
 The repository records approved scope and pinned research in `openspec/changes/modernize-claude-runtime/execution.md`. Target declarations alone aren't verification receipts.
+
+## Verified execution
+
+On September 30, 2026, all four standard actual-host cases passed at source revision `b40ee2b`: Pi + CLI, Pi + SDK, OMP + CLI and OMP + SDK. Each exercised seven authenticated phases, including native tools, resident continuation, saved-host-history replay under a fresh Claude ID, actual streaming/native-tool aborts, recovery and natural cleanup. Both OMP cases performed a real native hashline edit. This is Linux evidence, not macOS or Windows evidence.
+
+The final matrix invocation passed three cases; OMP CLI needed a selected rerun after Claude first emitted a malformed patch and then corrected it. The strict one-edit assertion remained unchanged. All four accepted receipts use the same source revision; this isn't a claim that one matrix invocation returned four passes. The failed receipt remains documented in [the live harness evidence](./testing/live-harness.md).
+
+The integrated offline gate passed 531 tests in 29 files, all three typecheck profiles, lint and formatting, with 94.14% line/statement coverage, 97.24% function coverage and 89.15% branch coverage against unchanged thresholds. Twenty-four Node harness tests also passed. Documentation/tracker commits following the verified revision don't change runtime source.
