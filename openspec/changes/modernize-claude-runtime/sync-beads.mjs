@@ -6,13 +6,22 @@ import { fileURLToPath } from "node:url";
 // Coordinator only: export the canonical local board, never an independent worker board.
 const base = dirname(fileURLToPath(import.meta.url));
 const root = resolve(base, "../../..");
-execFileSync(
-  "bd",
-  ["--sandbox", "export", "-o", resolve(base, "beads.jsonl")],
-  {
-    cwd: root,
-    stdio: "inherit",
-  },
+const exported = execFileSync("bd", ["--sandbox", "export"], {
+  cwd: root,
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "inherit"],
+});
+const plan = JSON.parse(readFileSync(resolve(base, "lanes.json"), "utf8"));
+const plannedIds = new Set([plan.epic, ...plan.tasks.map((task) => task.id)]);
+// Other changes have their own beads; this snapshot owns only this plan.
+const scoped = exported
+  .trim()
+  .split("\n")
+  .map(JSON.parse)
+  .filter((issue) => plannedIds.has(issue.id));
+writeFileSync(
+  resolve(base, "beads.jsonl"),
+  scoped.map((issue) => JSON.stringify(issue)).join("\n") + "\n",
 );
 const issues = new Map(
   readFileSync(resolve(base, "beads.jsonl"), "utf8")
@@ -23,7 +32,6 @@ const issues = new Map(
       return [issue.id, issue];
     }),
 );
-const plan = JSON.parse(readFileSync(resolve(base, "lanes.json"), "utf8"));
 let text = readFileSync(resolve(base, "tasks.md"), "utf8");
 for (const task of plan.tasks) {
   const escaped = task.key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

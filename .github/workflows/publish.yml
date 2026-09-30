@@ -3,35 +3,73 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      - run: npm ci
-
-      - name: Validate version match
+          package-manager-cache: false
+      - name: Install and verify OIDC-capable npm
         run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
-            exit 1
-          fi
+          npm install --global npm@11.5.1
+          test "$(npm --version)" = "11.5.1"
+          node --input-type=module -e '
+            import assert from "node:assert/strict";
+            const [major, minor] = process.versions.node.split(".").map(Number);
+            assert(major > 22 || (major === 22 && minor >= 19), "Node >=22.19 is required");
+          '
+      - name: Validate release identity and main ancestry
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+          assert.equal(process.env.GITHUB_REF, `refs/tags/v${pkg.version}`, "Tag must match package version");
+          assert.equal(pkg.name, "@ramarivera/pi-claude-cli", "Unexpected release package");
+          assert.equal(process.env.GITHUB_REPOSITORY, "ramarivera/pi-claude-cli", "Unexpected release repository");
+          assert.equal(pkg.repository.url, `https://github.com/${process.env.GITHUB_REPOSITORY}`, "npm repository must match OIDC repository");
+          NODE
+      - run: npm ci
+      - name: Pack and publish with npm trusted publishing
+        run: |
+          SCRATCH="$HOME/dev/agentic-scratchpads/pi-claude-cli/release"
+          mkdir -p "$SCRATCH"
+          npm pack --pack-destination "$SCRATCH" --json > "$SCRATCH/pack.json"
+          PACKAGE_FILE=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; console.log(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$SCRATCH/pack.json")
+          npm publish "$SCRATCH/$PACKAGE_FILE" --access public
 
-      - run: npm run test
-
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

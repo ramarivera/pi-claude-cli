@@ -4,38 +4,93 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
-  lint:
+  linux:
+    name: Complete Linux offline gate
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+          package-manager-cache: false
       - run: npm ci
+      - name: Prepare private scratch and pinned compiled OMP
+        shell: bash
+        run: |
+          SCRATCH="$HOME/dev/agentic-scratchpads/pi-claude-cli/ci"
+          mkdir -p "$SCRATCH/t" "$SCRATCH/bin"
+          chmod 700 "$SCRATCH" "$SCRATCH/t"
+          curl --fail --location --retry 3 --output "$SCRATCH/bin/omp" \
+            https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/omp-linux-x64
+          echo "24c830fceb0bd6884bf5bf2c7a2b7407bc23fafe655e924c695ef9be308e46f3  $SCRATCH/bin/omp" | sha256sum --check
+          chmod 755 "$SCRATCH/bin/omp"
+          test "$("$SCRATCH/bin/omp" --version)" = "omp/18.4.4"
+          echo "TMPDIR=$SCRATCH/t" >> "$GITHUB_ENV"
+          echo "PCC_COMPILED_BUN_EXECUTABLE=$SCRATCH/bin/omp" >> "$GITHUB_ENV"
+      - run: npm run typecheck
+      - run: npm run typecheck:pi
+      - run: npm run typecheck:omp
       - run: npm run lint
       - run: npm run format:check
+      - name: Validate committed implementation plan
+        run: node openspec/changes/modernize-claude-runtime/validate-plan.mjs
+      - run: npm run test:coverage
+      - run: node --test tests/e2e/harness.test.mjs
+      - name: Verify package contents
+        run: |
+          SCRATCH="$HOME/dev/agentic-scratchpads/pi-claude-cli/ci"
+          npm pack --dry-run --json > "$SCRATCH/pack.json"
+          node --input-type=module - "$SCRATCH/pack.json" <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+          const [pack] = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const files = new Set(pack.files.map(({ path }) => path));
+          for (const path of [pkg.main, "README.md", "LICENSE", ...Object.values(pkg.exports)]) {
+            assert(files.has(path.replace(/^\.\//, "")), `Package is missing ${path}`);
+          }
+          assert(![...files].some(path => /^(tests|node_modules|openspec)\//.test(path)), "Package includes development files");
+          NODE
 
-  typecheck:
-    runs-on: ubuntu-latest
+  macos:
+    name: macOS offline portability checks
+    runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+          package-manager-cache: false
+      - run: npm ci
+      - name: Prepare short private scratch for Unix sockets
+        run: |
+          SCRATCH="$HOME/dev/agentic-scratchpads/pi-claude-cli/ci"
+          mkdir -p "$SCRATCH/t"
+          chmod 700 "$SCRATCH" "$SCRATCH/t"
+          echo "TMPDIR=$SCRATCH/t" >> "$GITHUB_ENV"
+      - run: npm run test:coverage
+
+  windows:
+    name: Windows static checks (CLI runtime unsupported)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
       - run: npm ci
       - run: npm run typecheck
-
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-      - run: npm ci
-      - run: npm run test:coverage
+      - run: npm run typecheck:pi
+      - run: npm run typecheck:omp

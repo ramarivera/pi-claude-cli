@@ -4,6 +4,15 @@ Run Claude through the published `claude -p` runtime or the official Claude Agen
 
 Select the `pi-claude-cli` provider in the host's model picker. CLI is the default driver; set `PI_CLAUDE_DRIVER=sdk` to select the SDK. Both drivers let the official Claude runtime use its own login. The extension doesn't read the host's Anthropic OAuth credentials or construct subscription-authenticated HTTP requests.
 
+## Install the release
+
+```text
+pi install npm:@ramarivera/pi-claude-cli@0.4.0
+omp plugin install @ramarivera/pi-claude-cli@0.4.0
+```
+
+Authenticate with `claude auth login`, restart your host, and select a `pi-claude-cli/...` model. The npm package name is scoped; the provider ID stays `pi-claude-cli`. See [release instructions](docs/releasing.md) and [supported versions](docs/compatibility.md).
+
 ## Run from this checkout
 
 Install dependencies with `npm ci`, authenticate the published Claude executable with `claude auth login`, then load the appropriate entrypoint:
