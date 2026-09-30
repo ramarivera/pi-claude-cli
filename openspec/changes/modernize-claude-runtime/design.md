@@ -72,3 +72,9 @@ Live matrix: Pi+CLI, Pi+SDK, OMP+CLI, OMP+SDK. Assert semantic text/system promp
 - OMP edit/search units differ -> native schemas and semantic behavior tests.
 - Live account setup can block proof -> early readiness bead; no skipped-live completion.
 - Old tests can encode bugs -> explicit coverage mapping and stronger behavioral assertions.
+
+## Frozen interface revision
+
+`CONTRACT_VERSION = 1` is frozen in src/contracts/index.ts at lane commit 32c696e, with resolveResumePlan in resume.ts. Production public factories are `createClaudeRuntime` and `createClaudeEventNormalizer` from src/core/index.ts, `createCliDriver` from src/drivers/cli/index.ts, and `createSdkDriver` from src/drivers/sdk/index.ts. The integration composition root supplies the normalizerFactory through DriverFactoryOptions, so driver lanes don't import core internals. `registerPiAdapter` and `registerOmpAdapter` remain host-owned factories; production entrypoints share the integration-owned entrypoints/runtime.ts composition module.
+
+Current host packages are optional peers and pinned development dependencies. Original Mario packages remain temporary development inputs only until old source/tests are replaced at cutover; they don't add legacy runtime support. Live E2E uses actual RPC subprocesses; OMP may select a compiled installed binary explicitly so npm PATH doesn't choose an incompatible global Bun.

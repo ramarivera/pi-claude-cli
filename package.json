@@ -1,7 +1,7 @@
 {
   "name": "pi-claude-cli",
   "version": "0.3.1",
-  "description": "Pi coding agent extension that routes LLM calls through the Claude Code CLI",
+  "description": "Pi and Oh My Pi extension with a shared Claude core and selectable CLI or official Agent SDK transport",
   "main": "index.ts",
   "keywords": [
     "pi-package"
@@ -17,14 +17,26 @@
   },
   "license": "MIT",
   "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.99.1",
+    "@earendil-works/pi-coding-agent": "^0.99.1",
     "@mariozechner/pi-ai": "^0.52.0",
-    "@mariozechner/pi-coding-agent": "^0.52.0"
+    "@mariozechner/pi-coding-agent": "^0.52.0",
+    "@oh-my-pi/pi-ai": "^18.4.4",
+    "@oh-my-pi/pi-coding-agent": "^18.4.4"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.285",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "cross-spawn": "^7.0.6"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.99.1",
+    "@earendil-works/pi-coding-agent": "0.99.1",
     "@eslint/js": "^9.39.4",
+    "@mariozechner/pi-ai": "0.52.12",
+    "@mariozechner/pi-coding-agent": "0.52.12",
+    "@oh-my-pi/pi-ai": "18.4.4",
+    "@oh-my-pi/pi-coding-agent": "18.4.4",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^3.2.4",
@@ -52,6 +64,58 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test:offline": "vitest run --reporter=dot",
+    "test:live": "node tests/run-live.mjs",
+    "test:contracts": "vitest run tests/contracts tests/conformance --reporter=dot",
+    "verify:plan": "node openspec/changes/modernize-claude-runtime/sync-beads.mjs",
+    "typecheck:pi": "tsc --noEmit -p tsconfig.pi.json",
+    "typecheck:omp": "tsc --noEmit -p tsconfig.omp.json"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "omp": {
+    "extensions": [
+      "entrypoints/omp.ts"
+    ]
+  },
+  "exports": {
+    ".": "./index.ts",
+    "./pi": "./entrypoints/pi.ts",
+    "./omp": "./entrypoints/omp.ts",
+    "./core": "./src/core/index.ts",
+    "./cli": "./src/drivers/cli/index.ts",
+    "./sdk": "./src/drivers/sdk/index.ts",
+    "./contracts": "./src/contracts/index.ts"
+  },
+  "files": [
+    "index.ts",
+    "entrypoints",
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": {
+      "optional": true
+    },
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-ai": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-coding-agent": {
+      "optional": true
+    }
   }
 }

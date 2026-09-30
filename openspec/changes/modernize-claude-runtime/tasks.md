@@ -21,12 +21,12 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-start`.
   - Acceptance: Record tested target version matrix and explicit current-only support (legacy migration excluded by Ramiro), default driver/auth and billing source, allowed Claude-internal/user-MCP owners, resident CLI session strategy, and approval for exact new dependencies or CI changes; update specs before code if externally visible choices change.
 
-- [ ] 1.2 Freeze host-neutral driver and host interfaces (`pcc-contracts`; lane `contracts`; 90 min).
+- [x] 1.2 Freeze host-neutral driver and host interfaces (`pcc-contracts`; lane `contracts`; 90 min).
   - Capabilities: `claude-event-contract`, `host-tool-handoff`, `session-lifecycle`.
   - Blocked by: `pcc-policy`.
   - Acceptance: Neutral DTOs/driver+host seams compile with two driver and two host contract doubles; define lifecycle, correlations, capabilities and package exports; no host/SDK imports; frozen version and import names in design; contract tests pass.
 
-- [ ] 1.3 Prepare dependency and verification configuration once (`pcc-bootstrap`; lane `integration`; 60 min).
+- [x] 1.3 Prepare dependency and verification configuration once (`pcc-bootstrap`; lane `integration`; 60 min).
   - Capabilities: `sdk-driver`, `pi-adapter`, `omp-adapter`, `verification-suite`.
   - Blocked by: `pcc-contracts`.
   - Acceptance: Install only approved dependencies, preserve hooks, lock once, expose offline/live scripts with opt-in gate, establish supported host typecheck profiles; verification runs without paid inference; lane bootstrap receipt with frozen shared-file revision.

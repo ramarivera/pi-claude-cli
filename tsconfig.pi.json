@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/contracts/**/*.ts",
+    "src/core/**/*.ts",
+    "src/drivers/**/*.ts",
+    "src/adapters/pi/**/*.ts",
+    "entrypoints/pi.ts",
+    "entrypoints/runtime.ts"
+  ],
+  "exclude": ["tests", "node_modules"]
+}

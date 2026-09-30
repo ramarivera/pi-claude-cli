@@ -103,7 +103,11 @@
         "tests/mcp-config.test.ts",
         "tests/thinking-config.test.ts",
         "docs/compatibility.md",
-        "docs/migration.md"
+        "docs/migration.md",
+        "entrypoints/runtime.ts",
+        "tsconfig.pi.json",
+        "tsconfig.omp.json",
+        "tests/run-live.mjs"
       ],
       "kind": "implementation"
     }
