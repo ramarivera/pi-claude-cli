@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, relative, resolve } from "node:path";
+import { publicAssistant, publicStats } from "./diagnostics.mjs";
 
 export const MODEL = "claude-haiku-4-5-20251001";
 export const CASES = ["pi+cli", "pi+sdk", "omp+cli", "omp+sdk"];
@@ -272,6 +273,7 @@ function processes() {
 
 export class RpcHost {
   frames = [];
+  responses = [];
   commands = [];
   tracked = new Map();
   serial = 0;
@@ -407,12 +409,13 @@ export class RpcHost {
     this.child.stdin.write(JSON.stringify({ id, type, ...data }) + "\n");
     return id;
   }
-  async command(type, data = {}) {
+  async command(type, data = {}, timeout = 20000) {
     const id = this.send(type, data);
     const frame = await this.wait(
       () =>
         this.frames.find((item) => item.type === "response" && item.id === id),
       type,
+      timeout,
     );
     assert.equal(
       frame.success,
@@ -458,13 +461,59 @@ export class RpcHost {
   async prompt(host, message) {
     const since = this.frames.length;
     const id = this.send("prompt", { message });
-    await this.settled(host, id, since);
-    const { text } = await this.command("get_last_assistant_text");
-    assert.ok(
-      typeof text === "string" && text.length > 0,
-      "Missing assistant text",
-    );
-    return text;
+    try {
+      await this.settled(host, id, since);
+      const { text } = await this.command("get_last_assistant_text");
+      await this.captureResponse(id, since, text);
+      assert.ok(
+        typeof text === "string" && text.length > 0,
+        "Missing assistant text",
+      );
+      return text;
+    } catch (error) {
+      if (!this.responses.some((item) => item.promptId === id))
+        await this.captureResponse(id, since, undefined, error);
+      throw error;
+    }
+  }
+  async captureResponse(id, since, text, error) {
+    const diagnostic = {
+      promptId: id,
+      text,
+      ...(error ? { error: { name: error.name, message: error.message } } : {}),
+    };
+    const assistant = this.frames
+      .slice(since)
+      .filter(
+        (frame) =>
+          frame.type === "message_end" && frame.message?.role === "assistant",
+      )
+      .at(-1)?.message;
+    diagnostic.assistant = publicAssistant(assistant);
+    for (const command of ["get_messages", "get_session_stats"]) {
+      try {
+        const value = await this.command(command, {}, 1500);
+        if (command === "get_messages")
+          diagnostic.assistant =
+            publicAssistant(
+              value.messages
+                ?.filter((item) => item.role === "assistant")
+                .at(-1),
+            ) ?? diagnostic.assistant;
+        else diagnostic.stats = publicStats(value);
+      } catch (failure) {
+        (diagnostic.unavailable ??= []).push({ command, reason: failure.name });
+      }
+    }
+    diagnostic.text ??= diagnostic.assistant?.text;
+    this.responses.push(diagnostic);
+    return diagnostic;
+  }
+  assistantMessages() {
+    return this.frames
+      .filter((frame) => frame.type === "message_end")
+      .map((frame) => publicAssistant(frame.message))
+      .filter(Boolean);
   }
   async close() {
     this.track();

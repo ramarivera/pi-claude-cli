@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { publicAssistant, publicStats, textProof } from "./diagnostics.mjs";
 import {
   ROOT,
   RpcHost,
@@ -19,6 +20,143 @@ function runnerEnvironment(overrides) {
   delete env.NODE_TEST_CONTEXT;
   return env;
 }
+
+test("semantic marker failure retains synthetic text, final usage/error and stats", async () => {
+  const script = `
+    const assistant = {role:'assistant',content:[{type:'text',text:'READY'}],stopReason:'stop',usage:{input:12,output:2,totalTokens:14,cost:{total:0.00003}},privateAccount:'never-record'};
+    let buffer='';process.stdin.setEncoding('utf8');
+    process.stdin.on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\\n'))!==-1){const command=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);const emit=value=>process.stdout.write(JSON.stringify(value)+'\\n');let data={isStreaming:false};if(command.type==='get_last_assistant_text')data={text:'READY'};if(command.type==='get_messages')data={messages:[assistant]};if(command.type==='get_session_stats')data={assistantMessages:1,tokens:{input:12,output:2,total:14},cost:0.00003,privateAccount:'never-record'};emit({type:'response',id:command.id,success:true,data});if(command.type==='prompt'){emit({type:'message_end',message:assistant});emit({type:'agent_settled'});}}});process.stdin.on('end',()=>process.exit(0));
+  `;
+  const rpc = new RpcHost(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    process.env,
+    scratchRoot(),
+  );
+  try {
+    const text = await rpc.prompt("pi", "synthetic diagnostic fixture");
+    assert.throws(
+      () => textProof(text, "SYSTEM-synthetic", "READY"),
+      /system prompt wasn't honored/,
+    );
+    assert.equal(rpc.responses[0].text, "READY");
+    assert.equal(rpc.responses[0].assistant.stopReason, "stop");
+    assert.deepEqual(rpc.responses[0].assistant.usage, {
+      input: 12,
+      output: 2,
+      totalTokens: 14,
+      cost: { total: 0.00003 },
+    });
+    assert.deepEqual(rpc.responses[0].stats, {
+      assistantMessages: 1,
+      cost: 0.00003,
+      tokens: { input: 12, output: 2, total: 14 },
+    });
+    assert.equal(JSON.stringify(rpc.responses).includes("never-record"), false);
+  } finally {
+    await rpc.close();
+  }
+});
+
+test("cancelled diagnostics retain local final assistant even when RPC reads are unavailable", async () => {
+  const controller = new AbortController();
+  const rpc = new RpcHost(
+    process.execPath,
+    [
+      "-e",
+      "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));",
+    ],
+    process.env,
+    scratchRoot(),
+    { signal: controller.signal },
+  );
+  try {
+    rpc.frames.push({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "synthetic partial" }],
+        stopReason: "aborted",
+        errorMessage: "synthetic aborted",
+        usage: { input: 3, output: 1, totalTokens: 4 },
+      },
+    });
+    controller.abort(new Error("synthetic deadline"));
+    const captured = await rpc.captureResponse(
+      "synthetic-prompt",
+      0,
+      undefined,
+      new Error("synthetic original failure"),
+    );
+    assert.equal(captured.text, "synthetic partial");
+    assert.equal(captured.assistant.stopReason, "aborted");
+    assert.equal(captured.assistant.errorMessage, "synthetic aborted");
+    assert.equal(captured.assistant.usage.output, 1);
+    assert.deepEqual(
+      captured.unavailable.map((item) => item.command),
+      ["get_messages", "get_session_stats"],
+    );
+    assert.equal(rpc.assistantMessages()[0].text, "synthetic partial");
+    assert.equal(captured.error.message, "synthetic original failure");
+  } finally {
+    await rpc.close();
+  }
+});
+
+test("public diagnostic projections exclude private payload fields", () => {
+  assert.equal(publicAssistant({ role: "user", content: [] }), undefined);
+  assert.deepEqual(
+    publicStats({ tokens: { input: 4, auth: "secret" }, credential: "secret" }),
+    { tokens: { input: 4 } },
+  );
+});
+
+test("native prompt observations retain only marker presence and effective length", async () => {
+  const { providerPrompt, systemPrompt } = await import("./observer.ts");
+  const sandbox = scratchDirectory("observer-");
+  const previousPath = process.env.PCC_E2E_OBSERVATIONS;
+  const previousMarker = process.env.PCC_E2E_SYSTEM_MARKER;
+  const path = join(sandbox, "observations.jsonl");
+  try {
+    process.env.PCC_E2E_OBSERVATIONS = path;
+    process.env.PCC_E2E_SYSTEM_MARKER = "SYSTEM-synthetic";
+    const prompt = "SYSTEM-synthetic private instructions never-record";
+    providerPrompt({
+      systemPrompt: prompt,
+      auth: { apiKey: "never-record" },
+      privatePayload: "never-record",
+    });
+    systemPrompt("before_agent_start", ["prefix", "SYSTEM-synthetic"]);
+    const events = readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(events[0], {
+      type: "system-prompt",
+      data: {
+        stage: "before_provider_request",
+        available: true,
+        markerConfigured: true,
+        markerIncluded: true,
+        length: prompt.length,
+        parts: 1,
+      },
+    });
+    assert.equal(events[1].data.parts, 2);
+    assert.equal(events[1].data.markerIncluded, true);
+    assert.equal(readFileSync(path, "utf8").includes("never-record"), false);
+    assert.equal(
+      readFileSync(path, "utf8").includes("SYSTEM-synthetic"),
+      false,
+    );
+  } finally {
+    if (previousPath === undefined) delete process.env.PCC_E2E_OBSERVATIONS;
+    else process.env.PCC_E2E_OBSERVATIONS = previousPath;
+    if (previousMarker === undefined) delete process.env.PCC_E2E_SYSTEM_MARKER;
+    else process.env.PCC_E2E_SYSTEM_MARKER = previousMarker;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
 
 test("disabled direct runner explicitly skips all four authenticated cases", () => {
   const env = runnerEnvironment({ PI_CLAUDE_LIVE_E2E: "0" });

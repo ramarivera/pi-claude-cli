@@ -1,9 +1,20 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { record, response, sentinel, slow } from "./observer.js";
+import {
+  providerPrompt,
+  record,
+  response,
+  sentinel,
+  slow,
+  systemPrompt,
+} from "./observer.js";
 
 export default function register(api: ExtensionAPI): void {
   api.on("cache_warming_decision", () => ({ action: "stop" }));
+  api.on("before_agent_start", (event) =>
+    systemPrompt("before_agent_start", event.systemPrompt),
+  );
+  api.on("before_provider_request", (event) => providerPrompt(event.payload));
   api.on("after_provider_response", (event) =>
     response(event.status, event.headers),
   );
