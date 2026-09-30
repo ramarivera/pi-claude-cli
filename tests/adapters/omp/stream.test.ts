@@ -140,7 +140,10 @@ describe("native OMP stream projection", () => {
       },
     ]);
     const result = await collect(
-      projectRound(model, request, { onResponse }, backend, { driver: "cli" }),
+      projectRound(model, request, { onResponse }, backend, {
+        driver: "cli",
+        claudeSessionId: "stale-id",
+      }),
     );
     expect(result.message).toMatchObject({
       stopReason: "error",
@@ -154,6 +157,50 @@ describe("native OMP stream projection", () => {
     expect(
       result.events.filter((event) => event.type === "error"),
     ).toHaveLength(1);
+  });
+  it("doesn't report a cached session ID before a replacement session initializes", async () => {
+    const onResponse = vi.fn();
+    const observe = vi.fn((event: ClaudeDriverEvent) => {
+      if (event.type === "observation")
+        expect(onResponse).not.toHaveBeenCalled();
+    });
+    const result = await collect(
+      projectRound(
+        model,
+        request,
+        { onResponse },
+        runtime([
+          driver({
+            type: "observation",
+            family: "diagnostic",
+            subtype: "startup",
+            data: {},
+          }),
+          driver({
+            type: "initialized",
+            claudeSessionId: "replacement-id",
+            model: "claude",
+            runtimeVersion: "2",
+            capabilities: [],
+            tools: [],
+            mcpServers: [],
+          }),
+          {
+            type: "round_end",
+            roundId: "round",
+            reason: "stop",
+            content: [],
+            pendingToolCallIds: [],
+          },
+        ]),
+        { driver: "cli", claudeSessionId: "cached-old-id", observe },
+      ),
+    );
+    expect(result.message.stopReason).toBe("stop");
+    expect(onResponse).toHaveBeenCalledOnce();
+    expect(onResponse.mock.calls[0][0].headers["x-pi-claude-session-id"]).toBe(
+      "replacement-id",
+    );
   });
   it("settles abort during the deferred authoritative response hook once", async () => {
     const controller = new AbortController();
