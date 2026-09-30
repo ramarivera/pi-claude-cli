@@ -1,0 +1,48 @@
+schema: spec-driven
+context: |
+  TypeScript Pi extension; planned neutral core with official SDK/CLI drivers and Pi/OMP adapters.
+  Implementation is deferred until Ramiro explicitly says to start.
+  Exactly-one-owner tools, native schemas, own Claude login and four real host/driver E2E cases are required.
+  OpenSpec owns requirements; beads owns statuses/dependencies; lanes.json owns file allocation.
+  Preserve historical .planning evidence; this change supersedes historical SDK exclusion for this effort.
+rules:
+  tasks:
+    - Mirror each checkbox with a bead, owned files, blockers and acceptance evidence.
+    - Keep slices below two hours; freeze contracts before parallel writes; max three active lanes.
+operations:
+  apply:
+    guidance:
+      - Do not start while implementation-start is deferred.
+      - Use one integration owner for shared files and approved dependencies.
+      - Live tests require opt-in and account/usage readiness; unrun combinations remain incomplete.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

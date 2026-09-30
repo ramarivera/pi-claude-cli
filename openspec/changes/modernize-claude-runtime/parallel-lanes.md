@@ -1,0 +1,42 @@
+# Parallel lanes and native beads graph
+
+Implementation is deferred. Epic: `pcc-modernize`. OpenSpec owns requirements; native beads blocking/status owns execution.
+
+## Schedule
+
+1. Only `pcc-plan` is worked now.
+2. `pcc-start` remains deferred until explicit implementation authorization.
+3. Policy -> contracts -> single-owner dependency/test bootstrap.
+4. Six ready independent lanes: core, CLI, SDK, Pi, OMP, verification; max three active. Start next ready lane when a slot frees.
+5. All six terminals -> integration cutover -> integrated offline checks.
+6. Offline AND account/usage readiness -> four authenticated E2E combinations -> documentation.
+
+## File ownership
+
+| Lane | Owned paths |
+| --- | --- |
+| coordination | `openspec/**`, `.beads/**` |
+| contracts | `src/contracts/**`, `tests/contracts/**` |
+| core | `src/core/**`, `tests/core/**` |
+| cli | `src/drivers/cli/**`, `tests/drivers/cli/**` |
+| sdk | `src/drivers/sdk/**`, `tests/drivers/sdk/**` |
+| pi | `src/adapters/pi/**`, `entrypoints/pi.ts`, `tests/adapters/pi/**` |
+| omp | `src/adapters/omp/**`, `entrypoints/omp.ts`, `tests/adapters/omp/**` |
+| verification | `tests/support/**`, `tests/conformance/**`, `tests/e2e/**`, `tests/fixtures/**`, `docs/testing/**` |
+| integration | `index.ts`, `package.json`, `package-lock.json`, `tsconfig.json`, `vitest.config.ts`, `eslint.config.mjs`, `.prettierignore`, `.gitignore`, `.github/**`, `README.md`, `LICENSE`, `test-tool-extension.ts`, `src/provider.ts`, `src/process-manager.ts`, `src/stream-parser.ts`, `src/event-bridge.ts`, `src/control-handler.ts`, `src/tool-mapping.ts`, `src/prompt-builder.ts`, `src/mcp-config.ts`, `src/mcp-schema-server.cjs`, `src/thinking-config.ts`, `src/types.ts`, `tests/provider.test.ts`, `tests/process-manager.test.ts`, `tests/stream-parser.test.ts`, `tests/event-bridge.test.ts`, `tests/control-handler.test.ts`, `tests/tool-mapping.test.ts`, `tests/prompt-builder.test.ts`, `tests/mcp-config.test.ts`, `tests/thinking-config.test.ts`, `docs/compatibility.md`, `docs/migration.md` |
+
+Unmatched paths are unowned: allocate before writing. One writer per lane; same-lane beads are sequential. Contract changes after freeze require coordinated version/spec changes. Implementation directories listed here are planned; this turn doesn't create them.
+
+## Worker brief
+
+Include task title/bead, capability specs, immutable base/interface revision, ownership allowlist and forbidden paths, dependency readiness, acceptance checks, auth/cost limits and receipt format. Use an isolated worktree. Root manifests/barrels/old files are integration-only. Workers don't mutate OpenSpec/beads or another lane's tests. Coordinator claims and updates beads and rechecks each diff/test receipt.
+
+## Board portability
+
+The live board is .beads with embedded Dolt. beads.jsonl is a portable issue/dependency snapshot, not a full database backup. On a fresh clone, initialize a local board without replacing hooks/agent instructions, then import this snapshot once. Future workers use the coordinator's canonical board read-only; they don't recreate independent issue databases.
+
+Coordinator re-exports after status/dependency changes and synchronizes task checkboxes. Don't hand-edit JSONL. No sync/push, implementation dispatch or paid E2E was performed in this planning turn.
+
+## Verification
+
+Run `node openspec/changes/modernize-claude-runtime/validate-plan.mjs` after exporting the canonical board. It checks native blocker/parent edges, task checkbox parity, file ownership including existing source/test files, cycles, start/live gates, capability coverage and the four live combinations. Run strict OpenSpec validation separately. See verification.md for the planning receipt.

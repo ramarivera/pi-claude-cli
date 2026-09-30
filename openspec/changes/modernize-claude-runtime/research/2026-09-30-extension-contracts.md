@@ -1,0 +1,101 @@
+# pi-claude-cli: inspection and extension-contract research
+
+Research date: 2026-09-30. Implementation is explicitly deferred.
+
+Follow-up: [explicit automated live E2E scope, T3/BB event designs, and native OMP auth findings](./2026-09-30-testing-and-reference-designs.md).
+
+Latest deferred scope: [selectable SDK/CLI drivers and existing Pi SDK providers](./2026-09-30-existing-sdk-providers-and-drivers.md). This supersedes the original direct-CLI-only transport recommendation below.
+
+## Scope and finish condition
+
+Confirm the repository implements a Pi extension using direct `claude -p` subprocesses; compare current Pi and Oh My Pi extension/provider contracts; identify concrete modernization seams. Do not implement modernization or the shared-core extraction.
+
+Research tracker: `task-1790754453032-research-pi-claude-cli-and-defer-modernization-shared-core-implementation-eea2750b`.
+
+Deferred work tracker: `task-1790754935834-deferred-modernize-pi-claude-cli-and-extract-core-with-pi-omp-adapters-3d78e35a`.
+
+## Verified snapshots
+
+| Source | Version / commit | Evidence |
+| --- | --- | --- |
+| This extension | 0.3.1; `e0c9a12ac21be4c197e82795f7207746f3183028` | `/home/ramarivera/dev/pi-claude-cli`; clean `main`; last local commit March 21 |
+| Current canonical Pi | `@earendil-works/pi-coding-agent` and `pi-ai` 0.99.1; `1b347794e2a630e4359f2584f4eea388145d0ddf` | npm registry plus `/home/ramarivera/.context/earendil-works/pi`; `main`, HEAD = origin/HEAD |
+| Legacy Pi npm namespace | `@mariozechner/pi-coding-agent` 0.73.1 | npm registry snapshot; distinct from current canonical Pi |
+| Oh My Pi | `@oh-my-pi/pi-coding-agent` and `pi-ai` 18.4.4; `2b023d1b80133c523d66412602d99b5427408395` | source and npm registry; `/home/ramarivera/.context/can1357/oh-my-pi`; `main`, HEAD = origin/HEAD |
+| Installed / published Claude Code | 2.1.285 | local `claude --version`, `claude --help`, npm registry |
+| Claude Agent SDK types used as protocol evidence | TypeScript 0.3.285; Python source `bbf09e3c11d3c5f2cfa2d9cf20af9b3abdfc1b4a` | immutable npm declaration artifact; `/home/ramarivera/.context/anthropics/claude-agent-sdk-python`; HEAD = origin/HEAD |
+
+The extension declares Pi peers `^0.52.0`. This is an old compatibility target, not evidence that current Pi/OMP works. The old Pi GitHub URL redirects to `earendil-works/pi`.
+
+## What this repository actually does
+
+Yes: it registers `pi-claude-cli` as a custom model provider, deriving its model list from `getModels("anthropic")`, and supplies `streamSimple`. See [index.ts](/home/ramarivera/dev/pi-claude-cli/index.ts:68).
+
+Each provider request launches `claude` with `-p`, `--input-format stream-json`, `--output-format stream-json`, `--verbose`, `--include-partial-messages`, `--model`, and `--permission-prompt-tool stdio`. It writes a user envelope to stdin and parses stdout as NDJSON. See [process-manager.ts](/home/ramarivera/dev/pi-claude-cli/src/process-manager.ts:24) and [provider.ts](/home/ramarivera/dev/pi-claude-cli/src/provider.ts:108).
+
+The bridge streams text, thinking/signatures, and supported tool calls into Pi events. Tool names/arguments are translated for six Claude built-ins. Other host tools are advertised through a schema-only MCP server. At a top-level `message_stop` containing a supported host tool call, the provider kills Claude so the host can execute the call. Claude internal tools and user MCP tools are allowed to continue inside Claude. This is a hybrid ownership model, not a complete remote controller for every Claude Code feature. See [event-bridge.ts](/home/ramarivera/dev/pi-claude-cli/src/event-bridge.ts:100), [tool-mapping.ts](/home/ramarivera/dev/pi-claude-cli/src/tool-mapping.ts:22), [control-handler.ts](/home/ramarivera/dev/pi-claude-cli/src/control-handler.ts:40), and [provider.ts](/home/ramarivera/dev/pi-claude-cli/src/provider.ts:235).
+
+It attempts to reuse Claude's persisted session with `--resume`; subprocesses themselves remain fresh per request. Source confirms this mechanism. No authenticated inference/tool-execution turn was run to validate current runtime behavior or the execution-interception timing.
+
+## Current Pi contracts
+
+1. **Discovery and host modules.** Canonical packages are `@earendil-works/*`. The loader still aliases legacy `@mariozechner/*` imports to host copies. Provider state must use the host's module instances. Aliasing explains possible loading compatibility; it does not prove semantic compatibility. [Loader source](https://github.com/earendil-works/pi/blob/1b347794e2a630e4359f2584f4eea388145d0ddf/packages/coding-agent/src/core/extensions/loader.ts#L68).
+2. **Provider input changed.** Since 0.86.0 (September 19), `streamSimple` receives normalized `TranscriptContext`: prompt/tools are in system messages. Read them with `getCurrentSystemPrompt(messages)` and `getCurrentTools(messages)`. This extension reads `context.systemPrompt` and never consumes transcript tool declarations. [Provider contract](https://github.com/earendil-works/pi/blob/1b347794e2a630e4359f2584f4eea388145d0ddf/packages/coding-agent/src/core/extensions/types.ts#L1870), [change history](https://github.com/earendil-works/pi/blob/1b347794e2a630e4359f2584f4eea388145d0ddf/packages/ai/CHANGELOG.md#L95).
+3. **Callbacks and termination.** The provider contract requires payload/response callbacks; parsed provider events can be surfaced before normalization. Error events carry an assistant message, with `stopReason` `error` or `aborted`, and `errorMessage`. The current CLI provider omits those callbacks, converts many failures to success-shaped `done`, and emits a string in its catch-path `error`. A CLI transport needs an explicit callback adaptation rather than a fabricated HTTP status. [Stream contract](https://github.com/earendil-works/pi/blob/1b347794e2a630e4359f2584f4eea388145d0ddf/packages/ai/src/types.ts#L362).
+4. **Tools and lifecycle.** `getAllTools()` returns configured tools with schemas, exposure, and source metadata; active tools are a separate concept. Activating every tool on session start changes host policy, while freezing MCP schemas after first discovery misses changes. Host contexts supply cwd and session lifecycle; current Pi's provider options don't supply cwd. Session shutdown/reload needs to release this adapter's processes/state. [Tool APIs](https://github.com/earendil-works/pi/blob/1b347794e2a630e4359f2584f4eea388145d0ddf/packages/coding-agent/src/core/extensions/types.ts#L1705), [lifecycle types](https://github.com/earendil-works/pi/blob/1b347794e2a630e4359f2584f4eea388145d0ddf/packages/coding-agent/src/core/extensions/types.ts#L715).
+
+## Current Oh My Pi contracts
+
+1. **Distinct entrypoint is supported.** OMP uses `@oh-my-pi/*`, `.omp` extension directories, and `omp.extensions` manifests; legacy `pi.extensions` and package scopes still have compatibility handling. A separate manifest entry can select the OMP adapter. [Discovery](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/docs/extension-loading.md#L35), [scope aliases](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/extensibility/plugins/legacy-pi-compat.ts#L790).
+2. **Provider interface resembles Pi but is its own contract.** `registerProvider` accepts a custom `streamSimple`, model metadata, and optional model discovery/auth/usage features. OMP options include cwd, provider session state, live steering, and richer timeout/hooks. Error events also require an assistant message. [Provider configuration](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/extensibility/extensions/types.ts#L1675), [options](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/ai/src/types.ts#L519), [events](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/ai/src/types.ts#L1504).
+3. **Tool translation diverges substantially.** OMP's configured default edit mode is hashline, with an `{input: string}` schema; apply-patch also uses an input string, while replacement editing expects `old_string`/`new_string`. The extension emits Pi's `oldText`/`newText`. A rename table cannot represent all OMP edit modes. It also maps Claude `Glob` to `find`, whereas OMP has a separate glob tool and its `find` is semantic search requiring `query`/`grep_keywords`. Bash timeout is in seconds, another field requiring semantic translation rather than passthrough. Preserve actual native tool schema/format metadata and select translation based on effective tools. [Edit schemas](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/edit/schemas.ts#L3), [edit settings](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/edit/settings.ts#L36), [semantic find](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/tools/jfind/index.ts#L26), [bash units](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/tools/bash.ts#L1084).
+4. **OMP capabilities belong in its adapter.** Custom wire names/formats, tool examples/rendering, task/subagent identity, managed timers, lifecycle hooks, provider-session state, and UI progress are host features. Map Claude task/progress/status observations through optional adapter capabilities. Claude's internal agents and OMP's native `task` tool remain different owners. [Tool metadata](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/ai/src/types.ts#L1458), [extension contexts](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/extensibility/extensions/types.ts#L458).
+5. **Use provider-ready tools, not inventory serialization.** OMP `getAllTools()` returns the original parameters, which can be callable omptype/ArkType schemas rather than plain JSON Schema. The extension directly JSON-serializes those parameters into MCP files. OMP normalizes request `context.tools` using `toolWireSchema()` before calling the provider; this is the preferred current-turn source. Inventory fallback requires conversion. Pi's current adapter instead extracts tools from transcript messages, so this discovery seam must stay host-specific. [Runtime inventory](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/coding-agent/src/session/session-tools.ts#L726), [wire conversion](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/ai/src/utils/schema/wire.ts#L598), [provider normalization](https://github.com/can1357/oh-my-pi/blob/2b023d1b80133c523d66412602d99b5427408395/packages/agent/src/agent-loop.ts#L996).
+
+## Claude payload/behavior audit: concrete gaps
+
+These are source-contract findings, not live reproductions:
+
+| Area | Existing code | Current evidence / implication |
+| --- | --- | --- |
+| Permission responses | `request_id` is outside `response`; permits every non-custom tool; doesn't dispatch on request subtype | Current control replies nest `request_id` inside `response`. Unsupported request kinds need explicit handling, not tool approval. Current SDK allow path preserves input as `updatedInput`. [Extension](/home/ramarivera/dev/pi-claude-cli/src/control-handler.ts:55), [official implementation](https://github.com/anthropics/claude-agent-sdk-python/blob/bbf09e3c11d3c5f2cfa2d9cf20af9b3abdfc1b4a/src/claude_agent_sdk/_internal/query.py#L577) |
+| System prompt | Writes a file then passes its path to `--append-system-prompt` | That flag takes literal text; `--append-system-prompt-file` takes a path. [Extension](/home/ramarivera/dev/pi-claude-cli/src/process-manager.ts:58), [CLI reference](https://code.claude.com/docs/en/cli-reference#system-prompt-flags) |
+| Results/errors | Types only `success`/`error`; checks `subtype === "error"`; ignores result content/accounting | Current error subtypes include execution, turns, budget, structured-output retries; inspect `is_error` and `errors`. Result/model usage and denials are meaningful. Success subtype can also carry `is_error`. [Extension](/home/ramarivera/dev/pi-claude-cli/src/provider.ts:273), [published declarations](/home/ramarivera/.context/anthropics/claude-agent-sdk-types-0.3.285/sdk.d.ts:5611) |
+| Output families | Reacts to stream events, control requests, and result; silently ignores system/init and full assistant messages | Needs deliberate support/ignore decisions for initialization failures, compaction, task lifecycle/progress, hooks, retries, limits, permission denial, user input/dialogs, cancellation, resets, and suggestions. Some are opt-in. Full assistant messages can be fallback/canonical output and require deduplication with deltas. [Streaming docs](https://code.claude.com/docs/en/agent-sdk/streaming-output), [current union](/home/ramarivera/.context/anthropics/claude-agent-sdk-types-0.3.285/sdk.d.ts:5273) |
+| Subagents | Filters children of top-level stream events; no child transcript integration | Current token deltas are main-session only. Forwarded subagent output uses complete assistant/user messages with parent tool IDs, enabled with `--forward-subagent-text`; current parser ignores those messages. [CLI reference](https://code.claude.com/docs/en/cli-reference), [streaming docs](https://code.claude.com/docs/en/agent-sdk/streaming-output) |
+| Session state | Assumes message count > 1 proves Claude session persistence; ignores authoritative init IDs; uses flattened tool results on resume | Host history can be loaded, branched, compacted, or contain imported messages. Claude persistence and host history need separate identities/cursors and invalidation. Break-early persistence and structured tool-result continuity require actual fixtures. [Provider](/home/ramarivera/dev/pi-claude-cli/src/provider.ts:84), [resume builder](/home/ramarivera/dev/pi-claude-cli/src/prompt-builder.ts:153) |
+| Shared state/cleanup | MCP cache and prompt file names use module/process scope; only process-exit cleanup | Concurrent sessions can share stale tool snapshots and overwrite/delete prompt files. Abort, shutdown, reload, EOF, and terminal events need one consistent lifecycle. [Entrypoint](/home/ramarivera/dev/pi-claude-cli/index.ts:18), [temp file](/home/ramarivera/dev/pi-claude-cli/src/process-manager.ts:58) |
+| Effort/models | `xhigh` downgrades; any Opus model gets elevated `max`; metadata copied from host catalog | Current Claude has model-dependent `xhigh` and other effort behaviors. Use model/CLI capabilities rather than substring assumptions; host model catalog is not proof of account availability. [Effort mapping](/home/ramarivera/dev/pi-claude-cli/src/thinking-config.ts:17), [CLI reference](https://code.claude.com/docs/en/cli-reference) |
+
+The tracked planning records drift from implementation. For example, [internal-tool-timeout.md](/home/ramarivera/dev/pi-claude-cli/.planning/debug/internal-tool-timeout.md:55) claims an extended timeout fix, but the current provider still has only the fixed 180-second timeout. Existing provider tests mock Claude and host streams; they cannot establish current real protocol compatibility.
+
+Relevant intervening Claude release examples, from the official changelog: 2.1.111 adds `xhigh`; 2.1.211 adds subagent forwarding; 2.1.214 changes output draining; 2.1.219 adds init MCP errors/nested forwarding; 2.1.251 fixes injected tool-call identity; 2.1.259 adds permission-prompts control; 2.1.275 extends forked-skill forwarding; 2.1.277 fixes headless error hangs; 2.1.281 changes interrupted tool-call resume behavior; 2.1.283 fixes early-ended tool/result recovery. These are an initial integration-relevant selection, not an exhaustive release audit. [Official changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md).
+
+## Recommended future boundary
+
+This is a recommendation, not an implementation or finalized API design:
+
+```text
+Pi entrypoint -> Pi adapter ---------+
+                                    +-> shared Claude CLI core -> claude -p
+OMP entrypoint -> OMP adapter -------+
+```
+
+The **core** owns subprocess transport, validated protocol dispatch, Claude message/task/control state, terminal outcomes, Claude persistence tracking, and per-request resources. Its request/result/events must not import either host's types or event-stream implementation. Preserve direct CLI transport; SDK source here is evidence only.
+
+The **Pi adapter** extracts current transcript prompts/tools, captures cwd/lifecycle, preserves exposure/activation policy, implements callbacks, constructs Pi assistant messages/events, and maps tool calls/results.
+
+The **OMP adapter** owns OMP tool modes/metadata and native formats, provider-session storage, task/status presentation, subagent context, and steering integration where transport semantics support it. Unsupported optional capabilities should have explicit behavior. It must not silently equate Claude-owned tasks with host-owned tasks or claim live-steering support merely because an option exists.
+
+Tool schemas and ownership policy are supplied by adapters; protocol framing and control correlation are reusable. This allows core improvements to reach both hosts while OMP features remain behind OMP capabilities. The handoff strategy must be validated for deterministic execution ownership before promising Claude never executes host tools.
+
+## Remaining inputs for later implementation
+
+- Decide the supported Pi release range: legacy 0.52.x, latest legacy namespace, current canonical Pi, or an explicit combination.
+- Capture version-labelled real Claude streams for text/thinking, built-in/custom/native-format tools, mixed internal/host tool rounds, errors, permission/dialog/cancel, subagent progress, limits, compaction/resume/branching, and concurrent requests.
+- Inspect Ramiro's effective host tool inventory and OMP edit configuration; defaults don't establish live configuration.
+- Define observable compatibility expectations, then use protocol fixtures plus real host/CLI checks. The old mocked suite is useful regression evidence but insufficient for runtime compatibility.
+
+## Verification limits
+
+Confirmed code paths, primary source contracts, immutable SDK declarations, npm versions, installed Claude help/version, and reference HEAD alignment. No project files were changed, no dependencies installed, no tests executed, no authenticated `claude -p` model requests made, and no Pi/OMP runtime session launched. The project checkout stayed unchanged. Both requested implementation goals remain deferred.

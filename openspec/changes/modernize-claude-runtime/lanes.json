@@ -1,0 +1,500 @@
+{
+  "change": "modernize-claude-runtime",
+  "epic": "pcc-modernize",
+  "implementation": "deferred",
+  "max_active_lanes": 3,
+  "live_matrix": [
+    { "host": "pi", "driver": "cli" },
+    { "host": "pi", "driver": "sdk" },
+    { "host": "omp", "driver": "cli" },
+    { "host": "omp", "driver": "sdk" }
+  ],
+  "lanes": {
+    "coordination": {
+      "owns": [
+        "openspec/**",
+        ".beads/**"
+      ],
+      "kind": "coordination"
+    },
+    "contracts": {
+      "owns": [
+        "src/contracts/**",
+        "tests/contracts/**"
+      ],
+      "kind": "implementation"
+    },
+    "core": {
+      "owns": [
+        "src/core/**",
+        "tests/core/**"
+      ],
+      "kind": "implementation"
+    },
+    "cli": {
+      "owns": [
+        "src/drivers/cli/**",
+        "tests/drivers/cli/**"
+      ],
+      "kind": "implementation"
+    },
+    "sdk": {
+      "owns": [
+        "src/drivers/sdk/**",
+        "tests/drivers/sdk/**"
+      ],
+      "kind": "implementation"
+    },
+    "pi": {
+      "owns": [
+        "src/adapters/pi/**",
+        "entrypoints/pi.ts",
+        "tests/adapters/pi/**"
+      ],
+      "kind": "implementation"
+    },
+    "omp": {
+      "owns": [
+        "src/adapters/omp/**",
+        "entrypoints/omp.ts",
+        "tests/adapters/omp/**"
+      ],
+      "kind": "implementation"
+    },
+    "verification": {
+      "owns": [
+        "tests/support/**",
+        "tests/conformance/**",
+        "tests/e2e/**",
+        "tests/fixtures/**",
+        "docs/testing/**"
+      ],
+      "kind": "implementation"
+    },
+    "integration": {
+      "owns": [
+        "index.ts",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "eslint.config.mjs",
+        ".prettierignore",
+        ".gitignore",
+        ".github/**",
+        "README.md",
+        "LICENSE",
+        "test-tool-extension.ts",
+        "src/provider.ts",
+        "src/process-manager.ts",
+        "src/stream-parser.ts",
+        "src/event-bridge.ts",
+        "src/control-handler.ts",
+        "src/tool-mapping.ts",
+        "src/prompt-builder.ts",
+        "src/mcp-config.ts",
+        "src/mcp-schema-server.cjs",
+        "src/thinking-config.ts",
+        "src/types.ts",
+        "tests/provider.test.ts",
+        "tests/process-manager.test.ts",
+        "tests/stream-parser.test.ts",
+        "tests/event-bridge.test.ts",
+        "tests/control-handler.test.ts",
+        "tests/tool-mapping.test.ts",
+        "tests/prompt-builder.test.ts",
+        "tests/mcp-config.test.ts",
+        "tests/thinking-config.test.ts",
+        "docs/compatibility.md",
+        "docs/migration.md"
+      ],
+      "kind": "implementation"
+    }
+  },
+  "tasks": [
+    {
+      "id": "pcc-plan",
+      "key": "0.1",
+      "title": "Validate OpenSpec plan and mirrored beads graph",
+      "lane": "coordination",
+      "type": "task",
+      "mins": 60,
+      "deps": [],
+      "caps": [
+        "verification-suite"
+      ],
+      "accept": "Strict OpenSpec validation, acyclic native beads graph, exact task mirror, complete disjoint file ownership and four E2E combinations; staged planning artifacts and no extension implementation."
+    },
+    {
+      "id": "pcc-start",
+      "key": "0.2",
+      "title": "Wait for explicit implementation start instruction",
+      "lane": "coordination",
+      "type": "decision",
+      "mins": 15,
+      "deps": [
+        "pcc-plan"
+      ],
+      "caps": [
+        "verification-suite"
+      ],
+      "deferred": true,
+      "accept": "Ramiro explicitly instructs starting implementation; link that instruction in bead. Planning or a favourable design discussion alone doesn't satisfy this gate."
+    },
+    {
+      "id": "pcc-policy",
+      "key": "1.1",
+      "title": "Ratify compatibility and authentication execution policies",
+      "lane": "coordination",
+      "type": "decision",
+      "mins": 60,
+      "deps": [
+        "pcc-start"
+      ],
+      "caps": [
+        "pi-adapter",
+        "omp-adapter",
+        "host-tool-handoff",
+        "session-lifecycle",
+        "sdk-driver",
+        "cli-driver"
+      ],
+      "accept": "Record tested target version matrix and explicit legacy migration, default driver/auth and billing source, allowed Claude-internal/user-MCP owners, resident CLI session strategy, and approval for exact new dependencies or CI changes; update specs before code if externally visible choices change."
+    },
+    {
+      "id": "pcc-contracts",
+      "key": "1.2",
+      "title": "Freeze host-neutral driver and host interfaces",
+      "lane": "contracts",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-policy"
+      ],
+      "caps": [
+        "claude-event-contract",
+        "host-tool-handoff",
+        "session-lifecycle"
+      ],
+      "accept": "Neutral DTOs/driver+host seams compile with two driver and two host contract doubles; define lifecycle, correlations, capabilities and package exports; no host/SDK imports; frozen version and import names in design; contract tests pass."
+    },
+    {
+      "id": "pcc-bootstrap",
+      "key": "1.3",
+      "title": "Prepare dependency and verification configuration once",
+      "lane": "integration",
+      "type": "task",
+      "mins": 60,
+      "deps": [
+        "pcc-contracts"
+      ],
+      "caps": [
+        "sdk-driver",
+        "pi-adapter",
+        "omp-adapter",
+        "verification-suite"
+      ],
+      "accept": "Install only approved dependencies, preserve hooks, lock once, expose offline/live scripts with opt-in gate, establish supported host typecheck profiles; verification runs without paid inference; lane bootstrap receipt with frozen shared-file revision."
+    },
+    {
+      "id": "pcc-core-events",
+      "key": "2.1",
+      "title": "Implement neutral event reconciliation and terminal outcomes",
+      "lane": "core",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-bootstrap"
+      ],
+      "caps": [
+        "claude-event-contract"
+      ],
+      "accept": "Delta/full assistant dedupe, typed error/result mapping, usage and attributed retry/limit/task/status events pass state regression tests; one terminal outcome per turn; unknown event policy preserves diagnostics."
+    },
+    {
+      "id": "pcc-core-session",
+      "key": "2.2",
+      "title": "Implement session identity, handoff and lifecycle ownership",
+      "lane": "core",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-core-events"
+      ],
+      "caps": [
+        "session-lifecycle",
+        "host-tool-handoff"
+      ],
+      "accept": "Correlate multiple tool results by ID, invalidate changed driver/cwd/history/schema/branch state, settle channels and isolate concurrent sessions; abort/result/EOF and shutdown/reload races pass; no global cache/state."
+    },
+    {
+      "id": "pcc-cli-process",
+      "key": "3.1",
+      "title": "Implement raw CLI transport and process resource cleanup",
+      "lane": "cli",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-bootstrap"
+      ],
+      "caps": [
+        "cli-driver"
+      ],
+      "accept": "Correct prompt-file flag/cwd/argv/env, bidirectional NDJSON, fragmented UTF-8/lines and EPIPE/EOF/stderr/exit errors; drain/timeout/signal cleanup and per-request resources pass deterministic child-process tests."
+    },
+    {
+      "id": "pcc-cli-control",
+      "key": "3.2",
+      "title": "Implement CLI payload and interaction normalization",
+      "lane": "cli",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-cli-process"
+      ],
+      "caps": [
+        "cli-driver",
+        "claude-event-contract",
+        "host-tool-handoff"
+      ],
+      "accept": "Correct nested control request IDs and updated input; subtype dispatch, explicit unsupported requests, complete result/error variants and configured tasks/full-message families; deterministic host execution handoff; emit contract DTOs."
+    },
+    {
+      "id": "pcc-sdk-query",
+      "key": "4.1",
+      "title": "Implement official SDK driver and explicit auth options",
+      "lane": "sdk",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-bootstrap"
+      ],
+      "caps": [
+        "sdk-driver"
+      ],
+      "accept": "Official query executable/model/env options, inherited Claude login default, explicit API-key mode without hidden billing overrides, authoritative session IDs and callbacks, interrupt/close; lazy import allows CLI-only load; dependency transport never direct HTTP imitation."
+    },
+    {
+      "id": "pcc-sdk-handoff",
+      "key": "4.2",
+      "title": "Implement parked SDK MCP tool-result continuity",
+      "lane": "sdk",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-sdk-query"
+      ],
+      "caps": [
+        "sdk-driver",
+        "host-tool-handoff",
+        "session-lifecycle"
+      ],
+      "accept": "Expose native host schemas without lossy conversion, disable duplicate Claude native execution for host-owned tools, parked calls matched by IDs across host rounds, parallel/unordered results and cancellations settled; guarded persistence/steering capabilities with contract assumptions documented."
+    },
+    {
+      "id": "pcc-pi-stream",
+      "key": "5.1",
+      "title": "Implement current Pi provider input and stream projection",
+      "lane": "pi",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-bootstrap"
+      ],
+      "caps": [
+        "pi-adapter"
+      ],
+      "accept": "Current transcript prompt/tools, cwd host context, correct callbacks and AssistantMessage errors/usage; active exposure policy preserved; provider-ready tools and metadata project without SDK/OMP imports; entrypoint factory defined."
+    },
+    {
+      "id": "pcc-pi-life",
+      "key": "5.2",
+      "title": "Implement Pi tool and session lifecycle adaptation",
+      "lane": "pi",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-pi-stream"
+      ],
+      "caps": [
+        "pi-adapter",
+        "host-tool-handoff",
+        "session-lifecycle"
+      ],
+      "accept": "Built-in/custom/native schemas and tools results round-trip, session start/shutdown/reload/compact/tree/branch lifecycle, reentrancy and unsupported capabilities checked; no autoactivation of all tools; same adapter works with both contract drivers."
+    },
+    {
+      "id": "pcc-omp-tools",
+      "key": "6.1",
+      "title": "Implement OMP provider stream and native tool formats",
+      "lane": "omp",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-bootstrap"
+      ],
+      "caps": [
+        "omp-adapter"
+      ],
+      "accept": "OMP normalized context.tools/schema format, hashline/apply-patch/replacement edit, separate glob/semantic find, bash timeout units, callbacks/errors, cwd and native entrypoint; no Pi package imports; native tools retain OMP owner."
+    },
+    {
+      "id": "pcc-omp-life",
+      "key": "6.2",
+      "title": "Implement OMP session capabilities and attributed progress",
+      "lane": "omp",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-omp-tools"
+      ],
+      "caps": [
+        "omp-adapter",
+        "session-lifecycle",
+        "claude-event-contract"
+      ],
+      "accept": "Provider session store, shutdown/reload/subagent isolation, attributed task/status/limit progress and capability-gated steering; Claude tasks distinguished from OMP tasks; both drivers supported and unsupported capabilities explicit."
+    },
+    {
+      "id": "pcc-fixtures",
+      "key": "7.1",
+      "title": "Build versioned fixture catalog and coverage matrix",
+      "lane": "verification",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-bootstrap"
+      ],
+      "caps": [
+        "verification-suite",
+        "claude-event-contract"
+      ],
+      "accept": "Sanitized recordings with provenance/license/CLI-SDK-host versions/flags plus labelled synthetic rare-event cases; old test-to-replacement matrix; coverage inventory includes payload categories and concrete researched regressions; paid captures only behind approved live gate."
+    },
+    {
+      "id": "pcc-conformance",
+      "key": "7.2",
+      "title": "Build common driver and host contract suites",
+      "lane": "verification",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-fixtures"
+      ],
+      "caps": [
+        "verification-suite",
+        "cli-driver",
+        "sdk-driver",
+        "pi-adapter",
+        "omp-adapter"
+      ],
+      "accept": "Same expected events/outcomes for real driver modules with offline injected transport seams; host contract checks use actual host types; ordering/abort/correlation/error/tool ownership scenarios and replay fixtures; tests cannot merely mirror implementation."
+    },
+    {
+      "id": "pcc-e2e-harness",
+      "key": "7.3",
+      "title": "Build opt-in real Pi and OMP E2E matrix harness",
+      "lane": "verification",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-conformance"
+      ],
+      "caps": [
+        "verification-suite"
+      ],
+      "accept": "Four named real host/driver combinations, semantic output/system prompt/host tool/result/resume/abort/cleanup assertions, one OMP native-format and SDK parked-correlation case; CLI/auth/config prerequisites; bounded turns/time/model; disabled explicit skip, enabled unmet prerequisite failure; isolated resources and sanitized receipts."
+    },
+    {
+      "id": "pcc-cutover",
+      "key": "8.1",
+      "title": "Integrate all lanes and migrate legacy provider files",
+      "lane": "integration",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-core-session",
+        "pcc-cli-control",
+        "pcc-sdk-handoff",
+        "pcc-pi-life",
+        "pcc-omp-life",
+        "pcc-e2e-harness"
+      ],
+      "caps": [
+        "pi-adapter",
+        "omp-adapter",
+        "cli-driver",
+        "sdk-driver",
+        "session-lifecycle"
+      ],
+      "accept": "Root entrypoint shims and Pi/OMP discovery manifests select same neutral core+config driver; old provider ID/config/session migration explicit; replace old tests only with mapped equivalent/improved coverage; inspect every lane diff and receipts; no overlapping shared-file mutations."
+    },
+    {
+      "id": "pcc-offline",
+      "key": "8.2",
+      "title": "Verify integrated offline regression and host compatibility matrix",
+      "lane": "integration",
+      "type": "task",
+      "mins": 90,
+      "deps": [
+        "pcc-cutover"
+      ],
+      "caps": [
+        "verification-suite"
+      ],
+      "accept": "Lint/typecheck/unit/replay/process/contract suites fresh green for declared host versions; resolve hooks/failures without silencing tests/any; compare coverage inventory, module import isolation and no orphan children/temp resources; record commands and hashes."
+    },
+    {
+      "id": "pcc-live-access",
+      "key": "8.3",
+      "title": "Prepare authenticated live-test account and usage limits",
+      "lane": "coordination",
+      "type": "decision",
+      "mins": 30,
+      "deps": [
+        "pcc-start"
+      ],
+      "caps": [
+        "verification-suite",
+        "sdk-driver",
+        "cli-driver"
+      ],
+      "accept": "Human completes own Claude login if absent, account/auth/billing source and bounded test usage agreed, installed supported CLI/hosts and writable isolated session roots confirmed without copying tokens; no secrets in chat or fixtures. Existing cost acknowledgement retained; only missing specifics requested before live execution."
+    },
+    {
+      "id": "pcc-live",
+      "key": "8.4",
+      "title": "Execute all four authenticated host and driver E2E combinations",
+      "lane": "integration",
+      "type": "task",
+      "mins": 100,
+      "deps": [
+        "pcc-offline",
+        "pcc-live-access"
+      ],
+      "caps": [
+        "verification-suite"
+      ],
+      "accept": "Run SDK+Pi, CLI+Pi, SDK+OMP, CLI+OMP with actual authenticated Claude; semantic tools/output/resume/cancel/resource assertions and usage receipts; skipped/blocked combinations prevent implementation completion; every failure fixed or explicit incomplete."
+    },
+    {
+      "id": "pcc-docs",
+      "key": "8.5",
+      "title": "Finalize compatibility, migration and verification documentation",
+      "lane": "integration",
+      "type": "task",
+      "mins": 60,
+      "deps": [
+        "pcc-live"
+      ],
+      "caps": [
+        "pi-adapter",
+        "omp-adapter",
+        "verification-suite",
+        "sdk-driver",
+        "cli-driver"
+      ],
+      "accept": "Document tested release matrix, entrypoint/driver/auth choice and differences, preserved/upgraded legacy behavior, installed-vs-source evidence and live tests; spec/tasks/bead evidence synchronized by coordinator; no publish/deploy/commit without session authorization."
+    }
+  ]
+}
