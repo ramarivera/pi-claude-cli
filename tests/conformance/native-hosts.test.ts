@@ -204,6 +204,7 @@ async function boundary(host: "pi" | "omp", kind: DriverKind) {
   let provider: OmpProvider | undefined;
   const native = {
     on,
+    events: { emit: vi.fn() },
     registerProvider: (id: string, config: OmpProvider) => {
       expect(id).toBe("pi-claude-cli");
       provider = config;
