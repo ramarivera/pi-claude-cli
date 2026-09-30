@@ -171,19 +171,50 @@ export function toRequest(
   session: HostSessionIdentity,
   cwd: string,
 ): HostRoundRequest {
+  // OMP sampling defaults are undefined; these explicit controls have no Claude transport equivalent.
+  for (const key of [
+    "temperature",
+    "topP",
+    "topK",
+    "minP",
+    "presencePenalty",
+    "frequencyPenalty",
+    "repetitionPenalty",
+    "stopSequences",
+    "headers",
+    "fetch",
+    "thinkingBudgets",
+  ] as const) {
+    if (options[key] !== undefined)
+      throw new Error(
+        `OMP option ${key} isn't supported by the Claude runtime adapter`,
+      );
+  }
+  if (
+    options.maxTokens !== undefined &&
+    (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)
+  )
+    throw new Error("OMP maxTokens must be a positive safe integer");
   const transcript = normalizeTranscript(context);
   const last = transcript.at(-1);
   let input: HostRoundRequest["input"];
-  if (last?.role === "tool_result") {
-    const results: HostToolResult[] = [];
-    for (let index = transcript.length - 1; index >= 0; index--) {
-      const message = transcript[index];
-      if (message.role !== "tool_result") break;
-      const { role: _role, ...result } = message;
-      results.unshift(result);
-    }
-    input = { kind: "tool-results", results };
-  } else if (last?.role === "user")
+  const lastAssistant = transcript.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  const tail = transcript.slice(lastAssistant + 1);
+  const results: HostToolResult[] = tail
+    .filter((message) => message.role === "tool_result")
+    .map(({ role: _role, ...result }) => result);
+  const steering = tail.flatMap((message) =>
+    message.role === "user" ? [...message.content] : [],
+  );
+  if (results.length)
+    input = {
+      kind: "tool-results",
+      results,
+      ...(steering.length ? { steering } : {}),
+    };
+  else if (last?.role === "user")
     input = { kind: "prompt", content: last.content };
   else
     throw new Error(
@@ -219,6 +250,15 @@ export function toRequest(
     settings: {
       ...configuration.settings,
       effort: effort as HostRoundRequest["settings"]["effort"],
+      maxOutputTokens:
+        options.maxTokens === undefined
+          ? configuration.settings.maxOutputTokens
+          : configuration.settings.maxOutputTokens === undefined
+            ? options.maxTokens
+            : Math.min(
+                options.maxTokens,
+                configuration.settings.maxOutputTokens,
+              ),
     },
     auth: configuration.auth,
     signal: options.signal,

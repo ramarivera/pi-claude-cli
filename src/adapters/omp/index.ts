@@ -8,6 +8,12 @@ import {
   readRuntimeConfiguration,
 } from "../../../entrypoints/runtime.js";
 import type { RuntimeConfiguration } from "../../../entrypoints/runtime.js";
+import {
+  OmpLifecycle,
+  nativeWatchdog,
+  withSignal,
+  type OmpSessionState,
+} from "./lifecycle.js";
 import type { ClaudeRuntime } from "../../contracts/index.js";
 import { payloadForHook, replacePayload, toRequest } from "./request.js";
 import { projectRound } from "./stream.js";
@@ -37,16 +43,10 @@ export function registerOmpAdapter(
   if (typeof getBundledModels !== "function")
     throw new Error("OMP native extension catalog export is unavailable");
   const configuration = options.configuration ?? readRuntimeConfiguration();
-  const runtime = (options.runtimeFactory ?? createConfiguredRuntime)(
-    configuration,
+  const lifecycle = new OmpLifecycle(() =>
+    (options.runtimeFactory ?? createConfiguredRuntime)(configuration),
   );
-  // Lifecycle bindings are added in the second scoped checkpoint.
-  let cwd = process.cwd();
-  let sessionId: string = crypto.randomUUID();
-  api.on("session_start", (_event, ctx) => {
-    cwd = ctx.cwd;
-    sessionId = ctx.sessionManager.getSessionId();
-  });
+  lifecycle.register(api);
   api.registerProvider("pi-claude-cli", {
     api: "pi-claude-cli",
     baseUrl: "claude-runtime://local",
@@ -69,35 +69,125 @@ export function registerOmpAdapter(
     streamSimple(model, context, streamOptions = {}) {
       const output = createAssistantMessageEventStream();
       void (async () => {
+        let state: OmpSessionState | undefined;
+        let ownsRound = false;
+        const roundOwner = Symbol("OMP provider round");
+        let generation: number | undefined;
+        let timeoutError: Error | undefined;
+        let watchdog: ReturnType<typeof nativeWatchdog> | undefined;
         try {
+          state = lifecycle.session(streamOptions);
+          if (state.active)
+            throw new Error(
+              "Concurrent OMP provider rounds for one logical agent aren't supported",
+            );
+          state.active = true;
+          state.roundOwner = roundOwner;
+          ownsRound = true;
+          await state.cleanup;
+          generation = state.generation;
+          const signal = lifecycle.bindAbort(state, streamOptions.signal);
+          if (signal.aborted)
+            throw new Error("OMP provider round was aborted before it started");
           const request = toRequest(
             model,
             context,
-            streamOptions,
+            { ...streamOptions, signal },
             configuration,
-            {
-              sessionId: streamOptions.sessionId ?? sessionId,
-              branchId: "root",
-              historyRevision: "0",
-            },
-            cwd,
+            { ...state.identity },
+            state.cwd,
           );
-          const replacement = await streamOptions.onPayload?.(
-            payloadForHook(request),
-            model,
-            streamOptions.signal,
+          const active = state;
+          watchdog = nativeWatchdog(state.context, streamOptions, (error) => {
+            timeoutError = error;
+            active.controller?.abort(error);
+            void lifecycle.invalidate(active, "reset").catch(() => {
+              /* Cleanup is retained in active.cleanup. */
+            });
+          });
+          if (streamOptions.liveSteering)
+            lifecycle.unsupportedSteering(api, state, configuration.driver);
+          const replacement = await withSignal(
+            Promise.resolve(
+              streamOptions.onPayload?.(
+                payloadForHook(request),
+                model,
+                request.signal,
+              ),
+            ),
+            request.signal,
           );
+          const ownedRuntime = await withSignal(
+            lifecycle.runtime(),
+            request.signal,
+          );
+          if (
+            state.retired ||
+            generation !== state.generation ||
+            request.signal?.aborted
+          )
+            throw new Error(
+              "OMP provider round was invalidated before runtime initialization",
+            );
+          const activeState = state;
           const source = projectRound(
             model,
             replacePayload(request, replacement),
-            streamOptions,
-            await runtime,
-            { driver: configuration.driver },
+            { ...streamOptions, signal: request.signal },
+            ownedRuntime,
+            {
+              driver: configuration.driver,
+              claudeSessionId: activeState.claudeSessionId,
+              restoration:
+                !activeState.claudeSessionId &&
+                request.input.kind === "prompt" &&
+                request.transcript.length > 1
+                  ? "user-history-replay"
+                  : "runtime-managed",
+              activity: () => watchdog?.touch(),
+              failure: () => timeoutError,
+              observe: (event) => lifecycle.observe(api, activeState, event),
+              terminal: async (reason) => {
+                watchdog?.stop();
+                if (activeState.roundOwner === roundOwner)
+                  activeState.active = false;
+                activeState.parked = reason === "toolUse";
+                if (!activeState.parked) {
+                  lifecycle.detach(activeState);
+                  activeState.context.ui.setStatus(
+                    "pi-claude-cli-progress",
+                    undefined,
+                  );
+                }
+                if (
+                  (reason === "error" || reason === "aborted") &&
+                  generation === activeState.generation
+                )
+                  await lifecycle.invalidate(
+                    activeState,
+                    reason === "aborted" ? "abort" : "reset",
+                  );
+              },
+            },
           );
           for await (const event of source) output.push(event);
           output.end(await source.result());
         } catch (error) {
-          const reason = streamOptions.signal?.aborted ? "aborted" : "error";
+          const reason =
+            !timeoutError &&
+            (streamOptions.signal?.aborted || state?.controller?.signal.aborted)
+              ? "aborted"
+              : "error";
+          if (state && ownsRound && generation === state.generation) {
+            try {
+              await lifecycle.invalidate(
+                state,
+                reason === "aborted" ? "abort" : "reset",
+              );
+            } catch {
+              /* Stream preserves the triggering error; cleanup remains tracked. */
+            }
+          }
           output.push({
             type: "error",
             reason,
@@ -123,13 +213,20 @@ export function registerOmpAdapter(
               },
               stopReason: reason,
               errorMessage:
-                error instanceof Error
+                timeoutError?.message ??
+                (error instanceof Error
                   ? error.message
-                  : "Claude OMP adapter failed",
+                  : "Claude OMP adapter failed"),
               timestamp: Date.now(),
             },
           });
           output.end();
+        } finally {
+          watchdog?.stop();
+          if (state && ownsRound && state.roundOwner === roundOwner) {
+            state.active = false;
+            state.roundOwner = undefined;
+          }
         }
       })();
       return output;

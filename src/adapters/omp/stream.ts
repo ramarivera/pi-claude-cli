@@ -1,3 +1,4 @@
+import { withSignal } from "./lifecycle.js";
 import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import type {
   AssistantMessage,
@@ -16,8 +17,11 @@ import type {
 export interface StreamObservation {
   driver: "cli" | "sdk";
   claudeSessionId?: string;
+  restoration?: "runtime-managed" | "user-history-replay";
+  activity?(): void;
+  failure?(): Error | undefined;
   observe?(event: ClaudeDriverEvent): void;
-  terminal?(reason: AssistantMessage["stopReason"]): void;
+  terminal?(reason: AssistantMessage["stopReason"]): void | Promise<void>;
 }
 function nativeContent(
   block: AssistantContent,
@@ -237,37 +241,87 @@ export function projectRound(
   void (async () => {
     try {
       stream.push({ type: "start", partial: snapshot() });
-      for await (const item of runtime.streamRound(request)) {
+      for await (let item of runtime.streamRound(request)) {
         if (stream.done) break;
         if (item.type === "round_end") {
-          // Reconcile authoritative core content without deleting emitted blocks.
-          let cursor = 0;
+          const failure = observation.failure?.();
+          if (failure)
+            item = {
+              ...item,
+              reason: "error",
+              error: { code: "timeout", message: failure.message },
+            };
+          // Core order owns history. MCP parking can arrive after later text blocks.
+          const finalContent: AssistantMessage["content"] = [];
+          const used = new Set<number>();
           for (const block of item.content) {
             if (block.type === "tool_call") {
-              if (item.pendingToolCallIds.includes(block.id)) hostCall(block);
+              if (!item.pendingToolCallIds.includes(block.id)) continue;
+              hostCall(block);
+              const index = message.content.findIndex(
+                (previous) =>
+                  previous.type === "toolCall" && previous.id === block.id,
+              );
+              used.add(index);
+              finalContent.push(message.content[index]);
               continue;
             }
-            const nativeType = nativeContent(block).type;
+            const next = nativeContent(block);
+            const text = (value: AssistantMessage["content"][number]) =>
+              value.type === "text"
+                ? value.text
+                : value.type === "thinking"
+                  ? value.thinking
+                  : undefined;
             let index = message.content.findIndex(
               (previous, position) =>
-                position >= cursor && previous.type === nativeType,
+                !used.has(position) &&
+                previous.type === next.type &&
+                (text(previous) !== undefined
+                  ? text(previous) === text(next)
+                  : JSON.stringify(previous) === JSON.stringify(next)),
             );
-            if (index === -1) index = set(`terminal:${cursor}`, block) ?? -1;
+            if (index === -1)
+              index = message.content.findIndex(
+                (previous, position) =>
+                  !used.has(position) &&
+                  previous.type === next.type &&
+                  text(previous) !== undefined &&
+                  text(next)?.startsWith(text(previous) ?? ""),
+              );
+            if (index === -1)
+              index = message.content.findIndex(
+                (previous, position) =>
+                  !used.has(position) && previous.type === next.type,
+              );
+            if (index === -1)
+              index = set(`terminal:${finalContent.length}`, block) ?? -1;
             if (index >= 0) {
               reconcile(index, block);
-              cursor = index + 1;
+              used.add(index);
+              if (!(next.type === "text" && next.text === ""))
+                finalContent.push(message.content[index]);
             }
           }
+          // Preserve meaningful completed output when a partial terminal omits it.
+          message.content.forEach((block, index) => {
+            if (
+              !used.has(index) &&
+              !(block.type === "text" && block.text === "")
+            )
+              finalContent.push(block);
+          });
+          for (let index = 0; index < message.content.length; index++)
+            end(index);
           message = {
             ...message,
+            content: structuredClone(finalContent),
             model: item.model ?? message.model,
             stopReason: item.reason,
             usage: usage(item.usage),
             ...(item.error ? { errorMessage: item.error.message } : {}),
           };
-          for (let index = 0; index < message.content.length; index++)
-            end(index);
-          observation.terminal?.(item.reason);
+          await observation.terminal?.(item.reason);
           if (item.reason === "error" || item.reason === "aborted")
             stream.push({
               type: "error",
@@ -283,6 +337,7 @@ export function projectRound(
           stream.end();
           return;
         }
+        observation.activity?.();
         const event = item.event;
         if (!event.attribution.parentToolUseId && !event.attribution.agentId) {
           if (event.type === "initialized")
@@ -292,26 +347,33 @@ export function projectRound(
         }
         if (!responded) {
           responded = true;
-          await options.onResponse?.(
-            {
-              status: 0,
-              headers: {
-                "x-pi-claude-transport":
-                  observation.driver === "cli" ? "stdio" : "sdk",
-                "x-pi-claude-driver": observation.driver,
-                ...(observation.claudeSessionId
-                  ? { "x-pi-claude-session-id": observation.claudeSessionId }
-                  : {}),
-              },
-              metadata: {
-                transport: observation.driver === "cli" ? "stdio" : "sdk",
-                driver: observation.driver,
-                steering: "unsupported",
-                restoration: "runtime-managed",
-                cost: "Claude reported USD estimate; not subscription billing",
-              },
-            },
-            model,
+          await withSignal(
+            Promise.resolve(
+              options.onResponse?.(
+                {
+                  status: 0,
+                  headers: {
+                    "x-pi-claude-transport":
+                      observation.driver === "cli" ? "stdio" : "sdk",
+                    "x-pi-claude-driver": observation.driver,
+                    ...(observation.claudeSessionId
+                      ? {
+                          "x-pi-claude-session-id": observation.claudeSessionId,
+                        }
+                      : {}),
+                  },
+                  metadata: {
+                    transport: observation.driver === "cli" ? "stdio" : "sdk",
+                    driver: observation.driver,
+                    steering: "unsupported",
+                    restoration: observation.restoration ?? "runtime-managed",
+                    cost: "Claude reported USD estimate; not subscription billing",
+                  },
+                },
+                model,
+                request.signal,
+              ),
+            ),
             request.signal,
           );
         }
@@ -377,10 +439,12 @@ export function projectRound(
       }
       throw new Error("Claude runtime ended without a provider round terminal");
     } catch (error) {
-      const reason = request.signal?.aborted ? "aborted" : "error";
+      const failure = observation.failure?.();
+      const reason = !failure && request.signal?.aborted ? "aborted" : "error";
       message.stopReason = reason;
       message.errorMessage =
-        error instanceof Error ? error.message : "Claude OMP adapter failed";
+        failure?.message ??
+        (error instanceof Error ? error.message : "Claude OMP adapter failed");
       try {
         await runtime.invalidate(
           request.session,
@@ -389,7 +453,11 @@ export function projectRound(
       } catch {
         /* Preserve the original stream failure. */
       }
-      observation.terminal?.(reason);
+      try {
+        await observation.terminal?.(reason);
+      } catch {
+        /* Always settle the native stream even if cleanup UI fails. */
+      }
       stream.push({ type: "error", reason, error: snapshot() });
       stream.end();
     }

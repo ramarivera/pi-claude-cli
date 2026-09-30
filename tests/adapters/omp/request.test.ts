@@ -335,4 +335,71 @@ describe("native OMP request normalization", () => {
       content: [{ type: "text", text: "edited" }],
     });
   });
+  it("maps native output token bounds and rejects invalid bounds", () => {
+    expect(request({ maxTokens: 4096 }).settings.maxOutputTokens).toBe(4096);
+    expect(() => request({ maxTokens: 0 })).toThrow("positive safe integer");
+    expect(() => request({ maxTokens: Number.POSITIVE_INFINITY })).toThrow(
+      "positive safe integer",
+    );
+  });
+  it("keeps configured output bounds when native OMP supplies a larger default", () => {
+    const bounded = {
+      ...configuration,
+      settings: { ...configuration.settings, maxOutputTokens: 512 },
+    };
+    const configuredRequest = (maxTokens?: number) =>
+      toRequest(model, context, { maxTokens }, bounded, session, "/project");
+    expect(configuredRequest(64000).settings.maxOutputTokens).toBe(512);
+    expect(configuredRequest(256).settings.maxOutputTokens).toBe(256);
+    expect(configuredRequest().settings.maxOutputTokens).toBe(512);
+  });
+  it("retains all tool results when native boundary steering follows them", () => {
+    const mixed: Context = {
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "id", name: "edit", arguments: {} },
+          ],
+          stopReason: "toolUse",
+          timestamp: 0,
+        } as Context["messages"][number],
+        {
+          role: "toolResult",
+          toolCallId: "id",
+          toolName: "edit",
+          content: [],
+          isError: false,
+          timestamp: 1,
+        },
+        { role: "user", content: "new instruction", timestamp: 2 },
+      ],
+    };
+    expect(
+      toRequest(model, mixed, {}, configuration, session, "/project").input,
+    ).toMatchObject({
+      kind: "tool-results",
+      results: [{ toolCallId: "id" }],
+      steering: [{ type: "text", text: "new instruction" }],
+    });
+  });
+  it("accepts real OMP default controls and rejects concrete unsupported overrides", () => {
+    expect(() =>
+      request({
+        disableReasoning: false,
+        hideThinkingSummary: false,
+        maxRetryDelayMs: 60000,
+        maxTokens: 64000,
+        streamFirstEventTimeoutMs: 100000,
+        streamIdleTimeoutMs: 120000,
+        loopGuard: { enabled: true, checkAssistantContent: false },
+      }),
+    ).not.toThrow();
+    expect(() => request({ temperature: 0.2 })).toThrow(
+      "option temperature isn't supported",
+    );
+    expect(() => request({ headers: { Authorization: "host-auth" } })).toThrow(
+      "option headers isn't supported",
+    );
+  });
 });
