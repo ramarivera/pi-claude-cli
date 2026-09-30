@@ -463,6 +463,62 @@ export function createClaudeRuntime(
       );
   };
 
+  const traced = (
+    session: Session,
+    round: Round,
+    event: ClaudeDriverEvent,
+  ): ClaudeDriverEvent => {
+    if (
+      event.type !== "observation" ||
+      event.family !== "diagnostic" ||
+      ![
+        "core-message-start",
+        "core-message-stop",
+        "core-assistant-snapshot",
+        "host-mcp-park",
+      ].includes(event.subtype)
+    )
+      return event;
+    const safeId = (id: string): string =>
+      error("runtime", id).message.slice(0, 128);
+    const ids = (values: Iterable<string>): string[] =>
+      [...values].slice(0, 32).map(safeId);
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        runtimeBoundary: {
+          roundDone: round.done,
+          messageCount: round.messages.size,
+          messages: [...round.messages.values()].slice(0, 32).map((msg) => ({
+            messageId: safeId(msg.id),
+            ended: msg.ended,
+            blockCount: msg.blocks.size,
+            toolCallIds: ids(
+              [...msg.blocks.values()].flatMap((block) =>
+                block.type === "tool_call" ? [block.id] : [],
+              ),
+            ),
+          })),
+          unendedMessageIds: ids(
+            [...round.messages.values()]
+              .filter((msg) => !msg.ended)
+              .map((msg) => msg.id),
+          ),
+          proposalCount: round.proposals.size,
+          proposalIds: ids(round.proposals.keys()),
+          unparkedProposalIds: ids(
+            [...round.proposals.keys()].filter((id) => !session.parked.has(id)),
+          ),
+          parkedCount: session.parked.size,
+          parkedIds: ids(session.parked.keys()),
+          deliveredCount: session.delivered.size,
+          deliveredIds: ids(session.delivered.keys()),
+        },
+      },
+    };
+  };
+
   const handle = (
     session: Session,
     event: ClaudeDriverEvent,
@@ -601,7 +657,7 @@ export function createClaudeRuntime(
     round.channel.push({
       type: "driver_event",
       roundId: round.request.roundId,
-      event,
+      event: traced(session, round, event),
     });
     switch (event.type) {
       case "message_start": {
