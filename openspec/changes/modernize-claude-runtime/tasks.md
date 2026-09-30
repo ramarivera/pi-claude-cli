@@ -110,12 +110,12 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 8. Integration and actual proof
 
-- [ ] 8.1 Integrate all lanes and migrate legacy provider files (`pcc-cutover`; lane `integration`; 100 min).
+- [x] 8.1 Integrate all lanes and migrate legacy provider files (`pcc-cutover`; lane `integration`; 100 min).
   - Capabilities: `pi-adapter`, `omp-adapter`, `cli-driver`, `sdk-driver`, `session-lifecycle`.
   - Blocked by: `pcc-core-session`, `pcc-cli-control`, `pcc-sdk-handoff`, `pcc-pi-life`, `pcc-omp-life`, `pcc-e2e-harness`.
   - Acceptance: Root entrypoint shims and Pi/OMP discovery manifests select same neutral core+config driver; existing provider ID/root entrypoint retained; legacy migration excluded; replace old tests only with mapped equivalent/improved coverage; inspect every lane diff and receipts; no overlapping shared-file mutations.
 
-- [ ] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
+- [x] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-cutover`.
   - Acceptance: Lint/typecheck/unit/replay/process/contract suites fresh green for declared host versions; resolve hooks/failures without silencing tests/any; compare coverage inventory, module import isolation and no orphan children/temp resources; record commands and hashes.
