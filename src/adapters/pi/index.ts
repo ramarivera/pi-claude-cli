@@ -14,7 +14,12 @@ import {
   toPiRequest,
 } from "./normalize.js";
 import { PiProjection } from "./projection.js";
-import { PiLifecycle, idleWatchdog, type PiSessionState } from "./lifecycle.js";
+import {
+  PiLifecycle,
+  idleWatchdog,
+  withSignal,
+  type PiSessionState,
+} from "./lifecycle.js";
 
 export const PROVIDER_ID = "pi-claude-cli";
 export const SUPPORTED_PI_VERSION = "0.99.1";
@@ -95,11 +100,14 @@ export function registerPiAdapter(
             throw new Error("Pi provider round was aborted before it started");
           watchdog.touch();
           const payload = payloadForHook(request);
-          const replacement = await streamOptions.onPayload?.(payload, model);
+          const replacement = await withSignal(
+            Promise.resolve(streamOptions.onPayload?.(payload, model)),
+            request.signal,
+          );
           if (replacement !== undefined)
             request = replacementRequest(replacement, request);
           projection.setTools(request.tools);
-          ownedRuntime = await lifecycle.runtime();
+          ownedRuntime = await withSignal(lifecycle.runtime(), request.signal);
           if (
             state.retired ||
             generation !== state.generation ||
@@ -140,11 +148,21 @@ export function registerPiAdapter(
                   state.claudeSessionId ??
                   event.event.attribution.claudeSessionId;
                 if (claudeId) headers["x-pi-claude-session-id"] = claudeId;
-                await streamOptions.onResponse?.({ status: 0, headers }, model);
+                await withSignal(
+                  Promise.resolve(
+                    streamOptions.onResponse?.({ status: 0, headers }, model),
+                  ),
+                  request.signal,
+                );
               }
-              await streamOptions.onProviderStreamEvent?.(
-                structuredClone(event.event),
-                model,
+              await withSignal(
+                Promise.resolve(
+                  streamOptions.onProviderStreamEvent?.(
+                    structuredClone(event.event),
+                    model,
+                  ),
+                ),
+                request.signal,
               );
             }
             if (event.type === "round_end") {

@@ -21,7 +21,9 @@ adapter. Invalid replacement shapes fail the round.
 `0`, the selected driver/transport and authoritative Claude session ID when
 known. There is no HTTP response status for either runtime transport.
 `onProviderStreamEvent` receives cloned normalized driver DTOs before host event
-projection. Callback failures terminate with a Pi AssistantMessage error.
+projection. Callback failures terminate with a Pi AssistantMessage error. Abort
+and idle timeout settle even while a callback or runtime factory hasn't resolved;
+late callback returns can't begin inference or add output.
 
 Text/thinking deltas and snapshots reconcile by message ID and original content
 index. Only authoritative effective host calls are projected as native tool
@@ -70,6 +72,9 @@ Cancellation stays bound after a `toolUse` provider boundary so aborting a slow
 host tool settles Claude's parked call immediately. The listener is replaced for
 the next result round and removed after final output, history invalidation or
 shutdown. An abandoned parked call is invalidated when Pi's agent loop ends.
+A pending factory is retained for other active sessions; otherwise its eventual
+runtime is closed without holding native cancellation or shutdown open. Late
+factory cleanup failures are reported on the next runtime request or shutdown.
 Cleanup failures are reported while final runtime cleanup is still attempted.
 Subagent text remains separately attributed in `onProviderStreamEvent` rather
 than becoming parent assistant history; optional subagent forwarding enables
