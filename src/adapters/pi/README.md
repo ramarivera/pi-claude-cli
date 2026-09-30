@@ -35,7 +35,8 @@ explicitly unsupported and is disabled in the registered thinking-level map;
 the drivers accept `low`, `medium`, `high`, `xhigh` and `max` subject to the
 exact model's reported capabilities. Models with reasoning disabled reject an
 explicit effort. Native `maxTokens` becomes `settings.maxOutputTokens`, which
-the drivers implement through Claude's documented output-token setting.
+the drivers implement through Claude's documented output-token setting. When a
+configured cap is also present, the smaller cap applies.
 
 Native provider defaults work: `transport: "auto"`, `timeoutMs: 300000`, and
 `maxRetryDelayMs: 60000`. `timeoutMs` is a driver-activity idle bound, reset after
