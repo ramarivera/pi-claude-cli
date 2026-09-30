@@ -27,6 +27,7 @@ if (args.includes("--version")) {
           hasKey: !!process.env.ANTHROPIC_API_KEY,
           hasToken: !!process.env.ANTHROPIC_AUTH_TOKEN,
           hasHelper: !!process.env.CLAUDE_CODE_API_KEY_HELPER,
+          bunBeBun: process.env.BUN_BE_BUN,
           baseUrl: process.env.ANTHROPIC_BASE_URL,
           cloudMcp: process.env.ENABLE_CLAUDEAI_MCP_SERVERS,
           effort: process.env.CLAUDE_CODE_EFFORT_LEVEL,
@@ -101,6 +102,7 @@ if (args.includes("--version")) {
       transport = new StdioClientTransport({
         command: endpoint.command,
         args: endpoint.args,
+        env: { ...process.env, ...endpoint.env },
       });
       client = new Client({ name: "offline-claude", version: "1.0.0" });
       await client.connect(transport);
