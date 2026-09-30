@@ -188,6 +188,20 @@ const result = (id: string, text = id): HostToolResult => ({
 });
 
 describe("CLI resident process (offline child double)", () => {
+  it("keeps long native tool instructions beyond Claude's default MCP description limit", async () => {
+    const r = request();
+    r.tools = r.tools.map((tool) => ({
+      ...tool,
+      description: "native instruction ".repeat(500),
+    }));
+    const { session, iterator, receipt } = await open({}, r);
+    await prompt(session, "offline description proof");
+    await until(iterator, (event) => event.type === "turn_end");
+    expect(
+      JSON.parse(await readFile(receipt, "utf8")).environment
+        .maxMcpDescriptionLength,
+    ).toBe(String(r.tools[0].description.length));
+  });
   it("rejects immediate steering without consuming a normal next prompt", async () => {
     const { session, iterator } = await open();
     await expect(

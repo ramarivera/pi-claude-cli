@@ -105,6 +105,21 @@ async function open(t = transport(), r = request()) {
 }
 
 describe("official SDK query (offline doubles)", () => {
+  it("keeps long native tool instructions beyond Claude's default MCP description limit", async () => {
+    const r = request();
+    r.tools = [
+      {
+        owner: "host",
+        name: "native",
+        description: "native instruction ".repeat(500),
+        inputSchema: { type: "object", properties: {} },
+      },
+    ];
+    const { t } = await open(transport(), r);
+    expect(t.options.env?.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH).toBe(
+      String(r.tools[0].description.length),
+    );
+  });
   it("applies the requested output-token setting without changing the parent environment", async () => {
     const r = request();
     r.settings.maxOutputTokens = 8192;

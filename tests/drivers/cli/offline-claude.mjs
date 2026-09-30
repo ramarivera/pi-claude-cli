@@ -30,6 +30,8 @@ if (args.includes("--version")) {
           baseUrl: process.env.ANTHROPIC_BASE_URL,
           cloudMcp: process.env.ENABLE_CLAUDEAI_MCP_SERVERS,
           maxOutputTokens: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+          maxMcpDescriptionLength:
+            process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH,
         },
       }),
     );

@@ -66,6 +66,9 @@ export function createSdkDriver(options: SdkDriverOptions = {}): ClaudeDriver {
       )
         throw new Error("maxOutputTokens must be a positive integer");
       const env = sdkEnvironment(request.auth, options.environment);
+      env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(
+        Math.max(2048, ...request.tools.map((tool) => tool.description.length)),
+      );
       if (request.settings.maxOutputTokens !== undefined)
         env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(
           request.settings.maxOutputTokens,
