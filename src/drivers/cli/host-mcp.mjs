@@ -18,6 +18,14 @@ await new Promise((resolve, reject) => {
 const parked = new Map();
 const decoder = new StringDecoder("utf8");
 let buffer = "";
+// Only fixed phases and authoritative IDs cross this diagnostic seam. Never log
+// arguments, results, schemas, environment values, or raw protocol errors.
+const diagnostic = (phase, fields = {}) => {
+  if (!socket.destroyed)
+    socket.write(
+      JSON.stringify({ type: "diagnostic", phase, ...fields }) + "\n",
+    );
+};
 const fail = () => {
   for (const resolve of parked.values())
     resolve({
@@ -56,16 +64,26 @@ const server = new Server(
   { name: config.name, version: "1.0.0" },
   { capabilities: { tools: {} } },
 );
-server.setRequestHandler(ListToolsRequestSchema, () => ({
-  tools: config.tools,
-}));
+server.setRequestHandler(ListToolsRequestSchema, () => {
+  diagnostic("tools-listed");
+  return { tools: config.tools };
+});
 server.setRequestHandler(CallToolRequestSchema, (request) => {
   const id = request.params._meta?.["claudecode/toolUseId"];
-  if (typeof id !== "string" || !id)
+  if (typeof id !== "string" || !id) {
+    diagnostic("missing-tool-use-id");
     throw new Error("tools/call requires _meta[claudecode/toolUseId]");
-  if (!config.tools.some((tool) => tool.name === request.params.name))
+  }
+  if (!config.tools.some((tool) => tool.name === request.params.name)) {
+    diagnostic("unknown-tool");
     throw new Error("Unknown host tool");
-  if (parked.has(id)) throw new Error("Duplicate parked tool ID");
+  }
+  const fields = { id, name: request.params.name };
+  if (parked.has(id)) {
+    diagnostic("duplicate-tool-use-id", fields);
+    throw new Error("Duplicate parked tool ID");
+  }
+  diagnostic("call-received", fields);
   return new Promise((resolve) => {
     parked.set(id, resolve);
     const packet = JSON.stringify({
@@ -75,6 +93,7 @@ server.setRequestHandler(CallToolRequestSchema, (request) => {
       arguments: request.params.arguments ?? {},
     });
     if (Buffer.byteLength(packet) > 1024 * 1024) {
+      diagnostic("call-frame-limit", fields);
       parked.delete(id);
       resolve({
         content: [{ type: "text", text: "Host call exceeds frame limit" }],
@@ -93,11 +112,15 @@ server.setRequestHandler(CallToolRequestSchema, (request) => {
     return result;
   });
 });
-await server.connect(new StdioServerTransport());
+server.onerror = () => diagnostic("protocol-error");
 server.onclose = () => {
+  diagnostic("server-closed");
   socket.destroy();
 };
+await server.connect(new StdioServerTransport());
+diagnostic("ready");
 process.stdin.on("end", () => {
+  diagnostic("stdin-ended");
   void server.close();
   socket.destroy();
 });

@@ -38,7 +38,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Delta/full assistant dedupe, typed error/result mapping, usage and attributed retry/limit/task/status events pass state regression tests; one terminal outcome per turn; unknown event policy preserves diagnostics.
 
-- [x] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
+- [ ] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
   - Capabilities: `session-lifecycle`, `host-tool-handoff`.
   - Blocked by: `pcc-core-events`.
   - Acceptance: Correlate multiple tool results by ID, invalidate changed driver/cwd/history/schema/branch state, settle channels and isolate concurrent sessions; abort/result/EOF and shutdown/reload races pass; no global cache/state.
@@ -86,7 +86,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: OMP normalized context.tools/schema format, hashline/apply-patch/replacement edit, separate glob/semantic find, bash timeout units, callbacks/errors, cwd and native entrypoint; no Pi package imports; native tools retain OMP owner.
 
-- [ ] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
+- [x] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
   - Capabilities: `omp-adapter`, `session-lifecycle`, `claude-event-contract`.
   - Blocked by: `pcc-omp-tools`.
   - Acceptance: Provider session store, shutdown/reload/subagent isolation, attributed task/status/limit progress and capability-gated steering; Claude tasks distinguished from OMP tasks; both drivers supported and unsupported capabilities explicit.
