@@ -23,7 +23,7 @@ The package manifest exposes `pi.extensions` and `omp.extensions` for each host'
 
 ## Tools and sessions
 
-Each host supplies its effective tools and native JSON schemas. Claude calls them through the reserved `host` MCP namespace; Pi or OMP executes them, and the correlated results return to the parked Claude request. The runtime keeps a resident process/query across host tool rounds rather than killing Claude at an assistant-message boundary.
+Each host supplies its effective tools and native JSON schemas. Claude calls them through the reserved `host` MCP namespace; Pi or OMP executes them, and the correlated results return to the parked Claude request. The runtime keeps a resident process/query across host tool rounds rather than killing Claude at an assistant-message boundary. For a completed batch, the host may execute proposed calls before every MCP handler arrives. The core holds those results until each actual handler matches the completed call's ID, name and arguments.
 
 Native Claude tools are disabled by default. Explicitly configured Claude tools or user MCP servers execute under Claude ownership. They aren't renamed into host tools. OMP keeps its own hashline, apply-patch and replacement edit formats, distinct glob/search tools and timeout units.
 
