@@ -47,6 +47,64 @@ export function providerPrompt(payload: unknown): void {
   systemPrompt("before_provider_request", prompt);
 }
 
+function object(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** Metadata only: never persist observation data, tool arguments or error details. */
+export function normalizedObservation(value: unknown): void {
+  const envelope = object(value);
+  if (envelope.owner !== "claude") return;
+  const event = object(envelope.event);
+  if (
+    !["observation", "host_tool_request", "session_error", "turn_end"].includes(
+      String(event.type),
+    )
+  )
+    return;
+  const attribution = object(event.attribution);
+  const ids: Record<string, string | null> = {};
+  for (const key of [
+    "claudeSessionId",
+    "turnId",
+    "messageId",
+    "parentToolUseId",
+    "toolUseId",
+    "taskId",
+    "agentId",
+  ])
+    if (typeof attribution[key] === "string")
+      ids[key] = attribution[key].slice(0, 256);
+    else if (attribution[key] === null) ids[key] = null;
+  const call = object(event.call);
+  const error = object(event.error);
+  record("normalized-observation", {
+    type: event.type,
+    sequence: typeof event.sequence === "number" ? event.sequence : undefined,
+    attribution: ids,
+    family:
+      typeof event.family === "string" ? event.family.slice(0, 64) : undefined,
+    subtype:
+      typeof event.subtype === "string"
+        ? event.subtype.slice(0, 128)
+        : undefined,
+    status: typeof event.status === "string" ? event.status : undefined,
+    isError: typeof event.isError === "boolean" ? event.isError : undefined,
+    call:
+      event.type === "host_tool_request" &&
+      ["read", "edit", "pcc_sentinel", "pcc_slow"].includes(String(call.name))
+        ? {
+            id: call.id,
+            name: call.name,
+            inputKeys: Object.keys(object(call.arguments)),
+          }
+        : undefined,
+    errorCode: typeof error.code === "string" ? error.code : undefined,
+  });
+}
+
 let calls = 0;
 export async function sentinel(toolCallId: string) {
   const nonce = process.env.PCC_E2E_NONCE;

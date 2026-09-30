@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import test from "node:test";
 import { textProof } from "./diagnostics.mjs";
+import { hashlineProof } from "./hashline-proof.mjs";
 import {
   CASES,
   MODEL,
@@ -317,41 +318,10 @@ for (const name of CASES) {
           canonicalResultMatched: true,
         };
         if (hostKind === "omp") {
-          const edits = events.filter(
-            (event) =>
-              event.type === "tool-start" && event.data.toolName === "edit",
-          );
-          const reads = events.filter(
-            (event) =>
-              event.type === "tool-end" && event.data.toolName === "read",
-          );
-          assert.equal(
-            edits.length,
-            1,
-            "Expected exactly one native hashline edit",
-          );
-          assert.deepEqual(Object.keys(edits[0].data.args), ["input"]);
-          const patch = edits[0].data.args.input;
-          assert.match(
-            patch,
-            /^\*\*\* Begin Patch\n\[(?:[^\]\n]*\/)?fixture\.txt#[a-fA-F0-9]{4}\]\nPUT 1\.=1:\n\+replacement\n\*\*\* End Patch\n?$/,
-          );
-          const tag = patch.match(/#([a-fA-F0-9]{4})\]/)[1];
-          assert.ok(
-            reads.some((event) =>
-              JSON.stringify(event.data.result.content).includes(tag),
-            ),
-            "Edit tag wasn't taken from actual native read result",
-          );
-          assert.equal(
+          receipt.phases.hashline = hashlineProof(
+            events,
             readFileSync(join(sandbox, "fixture.txt"), "utf8"),
-            "replacement\n",
           );
-          receipt.phases.hashline = {
-            args: edits[0].data.args,
-            readTag: tag,
-            fileBytes: "replacement\n",
-          };
         }
         const resident =
           "No tools. Repeat the nonce returned by pcc_sentinel earlier in this conversation.";
