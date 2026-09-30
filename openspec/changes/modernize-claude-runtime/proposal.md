@@ -36,4 +36,4 @@ Planned module paths, dependencies, manifests and tests are in design.md and lan
 
 ## Authorization
 
-Implementation remains deferred. OpenSpec owns behavior/design; beads owns tasks/status/dependencies. The start gate requires Ramiro's explicit implementation instruction. This change supersedes historical .planning SDK-only exclusions for this effort while preserving historical files. Portable research/ sources accompany the proposal.
+Ramiro authorized implementation, commits and all four live combinations on 2026-09-30; the start gate is satisfied. OpenSpec owns behavior/design; beads owns tasks/status/dependencies. The approved current-only policy excludes legacy migration. See execution.md for the instruction and version/dependency decisions. This change supersedes historical .planning SDK-only exclusions for this effort while preserving historical files. Portable research/ sources accompany the proposal.

@@ -130,7 +130,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-offline`, `pcc-live-access`.
   - Acceptance: Run SDK+Pi, CLI+Pi, SDK+OMP, CLI+OMP with actual authenticated Claude; semantic tools/output/resume/cancel/resource assertions and usage receipts; skipped/blocked combinations prevent implementation completion; every failure fixed or explicit incomplete.
 
-- [ ] 8.5 Finalize compatibility, migration and verification documentation (`pcc-docs`; lane `integration`; 60 min).
+- [ ] 8.5 Finalize compatibility and verification documentation (`pcc-docs`; lane `integration`; 60 min).
   - Capabilities: `pi-adapter`, `omp-adapter`, `verification-suite`, `sdk-driver`, `cli-driver`.
   - Blocked by: `pcc-live`.
   - Acceptance: Document tested release matrix, entrypoint/driver/auth choice and differences, current supported behavior and excluded legacy migration, installed-vs-source evidence and live tests; spec/tasks/bead evidence synchronized by coordinator; no publish/deploy/commit without session authorization.

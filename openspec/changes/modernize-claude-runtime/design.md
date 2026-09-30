@@ -57,12 +57,12 @@ Live matrix: Pi+CLI, Pi+SDK, OMP+CLI, OMP+SDK. Assert semantic text/system promp
 
 ## Migration Plan
 
-1. Finish validated planning receipt; keep implementation-start deferred.
+1. Finish validated planning receipt and satisfy the explicit implementation-start gate (completed 2026-09-30).
 2. After explicit start, ratify policies, freeze interfaces and let one integrator prepare approved dependencies/test profiles.
 3. Dispatch bounded disjoint lanes; serially integrate inspected/verified results.
 4. Cut over root entrypoints/manifests; retire old files/tests only with mapped equivalent or stronger behavior coverage. Preserve historical .planning evidence.
 5. Run fresh integrated offline gates, then four real E2E combinations after account/usage readiness.
-6. Document actual tested releases, capability/driver/auth differences, migration and receipts. Do not publish or declare implementation complete before required proof.
+6. Document actual tested releases, capability/driver/auth differences, current-only configuration and receipts. Legacy migration is excluded. Do not publish or declare implementation complete before required proof.
 
 ## Risks / Trade-offs
 

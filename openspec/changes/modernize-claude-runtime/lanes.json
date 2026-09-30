@@ -391,7 +391,7 @@
     {
       "id": "pcc-docs",
       "key": "8.5",
-      "title": "Finalize compatibility, migration and verification documentation",
+      "title": "Finalize compatibility and verification documentation",
       "lane": "integration",
       "type": "task",
       "mins": 60,
