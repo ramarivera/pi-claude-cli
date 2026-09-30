@@ -264,6 +264,240 @@ test("OMP normalized observations whitelist synthetic event metadata without pay
   }
 });
 
+test("dedicated OMP diagnostic timeline retains nested boundary IDs and state without payloads", async () => {
+  const { nativeDiagnostic } = await import("./observer.ts");
+  const sandbox = scratchDirectory("observer-");
+  const previous = process.env.PCC_E2E_OBSERVATIONS;
+  const path = join(sandbox, "observations.jsonl");
+  try {
+    process.env.PCC_E2E_OBSERVATIONS = path;
+    const attribution = {
+      messageId: "synthetic-message",
+      parentToolUseId: null,
+    };
+    const runtimeBoundary = {
+      roundDone: false,
+      messageCount: 1,
+      proposalCount: 1,
+      parkedCount: 1,
+      deliveredCount: 0,
+      messages: [
+        {
+          messageId: "synthetic-message",
+          ended: false,
+          blockCount: 1,
+          toolCallIds: ["synthetic-edit"],
+        },
+      ],
+      unendedMessageIds: ["synthetic-message"],
+      proposalIds: ["synthetic-edit"],
+      unparkedProposalIds: [],
+      parkedIds: ["synthetic-edit"],
+      deliveredIds: [],
+    };
+    nativeDiagnostic({
+      owner: "claude",
+      hostSession: { sessionId: "synthetic-session", auth: "never-record" },
+      hostAgent: { kind: "main", id: "synthetic-agent", name: "never-record" },
+      event: {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "core-assistant-snapshot",
+        sequence: 12,
+        attribution: { ...attribution, auth: "never-record" },
+        data: {
+          messageId: "synthetic-message",
+          previousActiveMessageId: null,
+          activeMessageId: "synthetic-message",
+          ended: false,
+          stopReasonPresent: true,
+          blockCount: 1,
+          blocks: [
+            {
+              index: 0,
+              type: "tool_call",
+              ended: true,
+              toolCallId: "synthetic-edit",
+              arguments: { input: "never-record" },
+              text: "never-record",
+            },
+          ],
+          snapshotId: "synthetic-snapshot",
+          snapshotKnownMessage: true,
+          snapshotFull: false,
+          snapshotStopReasonPresent: true,
+          runtimeBoundary: {
+            ...runtimeBoundary,
+            messages: [
+              { ...runtimeBoundary.messages[0], content: "never-record" },
+            ],
+            auth: "never-record",
+          },
+          text: "never-record",
+          args: "never-record",
+        },
+      },
+    });
+    nativeDiagnostic({
+      owner: "claude",
+      event: {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "host-mcp-park",
+        sequence: 13,
+        attribution: { toolUseId: "synthetic-edit" },
+        data: {
+          toolUseId: "synthetic-edit",
+          toolName: "edit",
+          serverName: "host",
+          arguments: { input: "never-record" },
+          auth: "never-record",
+        },
+      },
+    });
+    const raw = readFileSync(path, "utf8");
+    const timeline = raw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(timeline, [
+      {
+        type: "native-diagnostic",
+        data: {
+          owner: "claude",
+          hostSession: { sessionId: "synthetic-session" },
+          hostAgent: { kind: "main", id: "synthetic-agent" },
+          event: {
+            type: "observation",
+            family: "diagnostic",
+            subtype: "core-assistant-snapshot",
+            sequence: 12,
+            attribution,
+            data: {
+              messageId: "synthetic-message",
+              previousActiveMessageId: null,
+              activeMessageId: "synthetic-message",
+              ended: false,
+              stopReasonPresent: true,
+              blockCount: 1,
+              blocks: [
+                {
+                  index: 0,
+                  type: "tool_call",
+                  ended: true,
+                  toolCallId: "synthetic-edit",
+                },
+              ],
+              snapshotId: "synthetic-snapshot",
+              snapshotKnownMessage: true,
+              snapshotFull: false,
+              snapshotStopReasonPresent: true,
+              runtimeBoundary,
+            },
+          },
+        },
+      },
+      {
+        type: "native-diagnostic",
+        data: {
+          owner: "claude",
+          hostSession: {},
+          hostAgent: {},
+          event: {
+            type: "observation",
+            family: "diagnostic",
+            subtype: "host-mcp-park",
+            sequence: 13,
+            attribution: { toolUseId: "synthetic-edit" },
+            data: {
+              toolUseId: "synthetic-edit",
+              toolName: "edit",
+              serverName: "host",
+            },
+          },
+        },
+      },
+    ]);
+    assert.equal(raw.includes("never-record"), false);
+  } finally {
+    if (previous === undefined) delete process.env.PCC_E2E_OBSERVATIONS;
+    else process.env.PCC_E2E_OBSERVATIONS = previous;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("dedicated OMP diagnostics reject unsupported events and bound identifiers and nested arrays", async () => {
+  const { nativeDiagnostic } = await import("./observer.ts");
+  const sandbox = scratchDirectory("observer-");
+  const previous = process.env.PCC_E2E_OBSERVATIONS;
+  const path = join(sandbox, "observations.jsonl");
+  const event = {
+    type: "observation",
+    family: "diagnostic",
+    subtype: "core-message-start",
+    sequence: 0,
+    attribution: {},
+    data: {},
+  };
+  try {
+    process.env.PCC_E2E_OBSERVATIONS = path;
+    for (const invalid of [
+      { owner: "other", event },
+      { owner: "claude", event: { ...event, sequence: -1 } },
+      { owner: "claude", event: { ...event, sequence: 1.2 } },
+      { owner: "claude", event: { ...event, subtype: "unknown" } },
+      { owner: "claude", event: { ...event, family: "user-input" } },
+    ])
+      nativeDiagnostic(invalid);
+    assert.equal(existsSync(path), false);
+    const ids = Array.from({ length: 40 }, (_, i) => `synthetic-${i}`);
+    nativeDiagnostic({
+      owner: "claude",
+      hostSession: { sessionId: "x".repeat(129), branchId: "bad\nidentifier" },
+      event: {
+        ...event,
+        data: {
+          messageId: "",
+          ended: "false",
+          blockCount: -1,
+          blocks: ids.map((id) => ({
+            index: 0,
+            type: "tool_call",
+            toolCallId: id,
+            ended: true,
+          })),
+          runtimeBoundary: {
+            roundDone: false,
+            messages: ids.map((id) => ({
+              messageId: id,
+              ended: false,
+              toolCallIds: ids,
+            })),
+            proposalIds: ids,
+            parkedIds: ["", "x".repeat(129), "bad\nidentifier", "valid-id"],
+          },
+        },
+      },
+    });
+    const captured = JSON.parse(readFileSync(path, "utf8"));
+    assert.deepEqual(captured.data.hostSession, {});
+    const data = captured.data.event.data;
+    assert.equal(data.messageId, undefined);
+    assert.equal(data.ended, undefined);
+    assert.equal(data.blockCount, undefined);
+    assert.equal(data.blocks.length, 32);
+    assert.equal(data.runtimeBoundary.messages.length, 32);
+    assert.equal(data.runtimeBoundary.messages[0].toolCallIds.length, 32);
+    assert.deepEqual(data.runtimeBoundary.proposalIds, ids.slice(0, 32));
+    assert.deepEqual(data.runtimeBoundary.parkedIds, ["valid-id"]);
+    assert.equal(data.runtimeBoundary.roundDone, false);
+  } finally {
+    if (previous === undefined) delete process.env.PCC_E2E_OBSERVATIONS;
+    else process.env.PCC_E2E_OBSERVATIONS = previous;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("native prompt observations retain only marker presence and effective length", async () => {
   const { providerPrompt, systemPrompt } = await import("./observer.ts");
   const sandbox = scratchDirectory("observer-");
