@@ -604,7 +604,15 @@ describe("offline control policy regression", () => {
         },
       },
     ]);
-    expect(events).toEqual([]);
+    expect(events).toEqual([
+      {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "host-mcp-permission",
+        data: { requestId: "host-ok", toolName: "mcp__host__edit" },
+        attribution: { toolUseId: "host-call" },
+      },
+    ]);
     expect(() =>
       channel.handle({
         type: "control_request",

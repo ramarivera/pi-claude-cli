@@ -485,6 +485,56 @@ describe("CLI resident process (offline child double)", () => {
 });
 
 describe("native MCP endpoint and correlated parked calls (offline MCP client double)", () => {
+  it("reports permission, MCP dispatch and missing metadata without tool input or error payloads", async () => {
+    const { session, iterator } = await open();
+    await prompt(session, "tools-missing-meta");
+    const diagnostics: ClaudeDriverEvent[] = [];
+    await until(iterator, (event) => {
+      if (
+        event.type === "observation" &&
+        ["host-mcp-transport", "host-mcp-permission"].includes(event.subtype)
+      )
+        diagnostics.push(event);
+      return event.type === "turn_end";
+    });
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          subtype: "host-mcp-transport",
+          data: { phase: "ready" },
+        }),
+        expect.objectContaining({
+          subtype: "host-mcp-transport",
+          data: { phase: "tools-listed" },
+        }),
+        expect.objectContaining({
+          subtype: "host-mcp-transport",
+          data: { phase: "missing-tool-use-id" },
+          attribution: { turnId: "tools-missing-meta" },
+        }),
+        expect.objectContaining({
+          subtype: "host-mcp-permission",
+          data: {
+            requestId: "permission-missing",
+            toolName: "mcp__host__edit",
+          },
+          attribution: {
+            turnId: "tools-missing-meta",
+            toolUseId: "missing-meta-permission",
+          },
+        }),
+      ]),
+    );
+    expect(
+      diagnostics.some(
+        (event) =>
+          event.type === "observation" && event.data.phase === "call-received",
+      ),
+    ).toBe(false);
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /updatedInput|arguments|claudecode\/toolUseId|apiKey/,
+    );
+  });
   it("preserves complete native JSON Schema and parks the actual MCP handler until matching unordered results", async () => {
     const { session, iterator } = await open();
     await prompt(session, "tools");
