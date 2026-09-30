@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
   normalizeContext,
   type AssistantMessageEvent,
@@ -209,6 +210,87 @@ describe("current Pi provider registration", () => {
         );
     },
   );
+  it("redacts API and MCP credentials in hooks while keeping original driver credentials", async () => {
+    const native = host();
+    const backend = runtime([initialized(), terminal]);
+    const configured = {
+      ...configuration,
+      auth: { mode: "api-key" as const, apiKey: "private-api-key" },
+      settings: {
+        ...configuration.settings,
+        userMcpServers: [
+          {
+            name: "stdio-secret",
+            config: {
+              type: "stdio" as const,
+              command: "local-tool",
+              env: { TOKEN: "private-stdio-token" },
+            },
+          },
+          {
+            name: "http-secret",
+            config: {
+              type: "http" as const,
+              url: "https://example.test",
+              headers: { Authorization: "private-http-token" },
+            },
+          },
+        ],
+      },
+    };
+    registerPiAdapter(native.pi, {
+      configuration: configured,
+      runtimeFactory: async () => backend,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const events = await collect(
+      native.provider().streamSimple(model, transcript(), {
+        onPayload: (value) => {
+          const payload = value as HostRoundRequest;
+          const serialized = JSON.stringify(payload);
+          for (const secret of [
+            "private-api-key",
+            "private-stdio-token",
+            "private-http-token",
+          ])
+            expect(serialized).not.toContain(secret);
+          expect(payload.auth).toEqual({
+            mode: "api-key",
+            apiKey: "[redacted]",
+          });
+          expect(payload.settings.userMcpServers).toMatchObject([
+            { config: { env: { TOKEN: "[redacted]" } } },
+            { config: { headers: { Authorization: "[redacted]" } } },
+          ]);
+          return { ...payload, systemPrompt: "safe replacement" };
+        },
+      }),
+    );
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+    expect(backend.requests[0].auth).toEqual(configured.auth);
+    expect(backend.requests[0].settings.userMcpServers).toEqual(
+      configured.settings.userMcpServers,
+    );
+    expect(backend.requests[0].systemPrompt).toBe("safe replacement");
+  });
+  it("disables unsupported minimal effort while preserving native reasoning metadata", () => {
+    const native = host();
+    registerPiAdapter(native.pi, { configuration });
+    const models = native.provider().models ?? [];
+    for (const catalogModel of models)
+      if (!("type" in catalogModel) || catalogModel.type === "chat") {
+        const chat = catalogModel as Extract<
+          typeof catalogModel,
+          { reasoning: boolean }
+        >;
+        if (chat.reasoning) expect(chat.thinkingLevelMap?.minimal).toBeNull();
+        expect(chat.reasoning).toBe(
+          getBuiltinModels("anthropic").find(
+            (original) => original.id === chat.id,
+          )?.reasoning,
+        );
+      }
+  });
   it("rejects minimal reasoning before opening a runtime", async () => {
     const native = host();
     const factory = vi.fn(async () => runtime([initialized(), terminal]));

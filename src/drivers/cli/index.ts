@@ -370,6 +370,8 @@ class CliSession implements ClaudeDriverSession {
       [HOST_SERVER]: {
         type: "stdio",
         command: process.execPath,
+        // Compiled Bun applications need this per-child switch to execute JS.
+        ...(process.versions.bun ? { env: { BUN_BE_BUN: "1" } } : {}),
         args: [
           fileURLToPath(new URL("./host-mcp.mjs", import.meta.url)),
           toolFile,

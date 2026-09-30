@@ -1,8 +1,8 @@
-# Planning verification receipt
+# Historical planning verification receipt
 
 Date: 2026-09-30. Base revision: `e0c9a12ac21be4c197e82795f7207746f3183028`.
 
-Planning is complete. Runtime implementation remains deferred behind `pcc-start`; OpenSpec's completed artifact status means the planning documents exist, not that the extension modernization is implemented.
+This records the planning snapshot before Ramiro authorized implementation. Current authorization and implementation evidence are in [execution.md](execution.md). OpenSpec's completed artifact status means the planning documents exist, not that the extension modernization is implemented.
 
 ## Checks
 

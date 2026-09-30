@@ -7,8 +7,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
-      include: ["src/**/*.ts", "index.ts"],
-      exclude: ["src/mcp-schema-server.cjs"],
+      include: ["src/**/*.ts", "entrypoints/**/*.ts", "index.ts"],
       thresholds: {
         lines: 92,
         functions: 92,

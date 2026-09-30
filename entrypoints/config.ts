@@ -125,6 +125,9 @@ export function readRuntimeConfiguration(
   const maxTurns = positiveNumber(env, "PI_CLAUDE_MAX_TURNS");
   if (maxTurns !== undefined && !Number.isInteger(maxTurns))
     throw new Error("PI_CLAUDE_MAX_TURNS must be an integer");
+  const maxOutputTokens = positiveNumber(env, "PI_CLAUDE_MAX_OUTPUT_TOKENS");
+  if (maxOutputTokens !== undefined && !Number.isSafeInteger(maxOutputTokens))
+    throw new Error("PI_CLAUDE_MAX_OUTPUT_TOKENS must be a safe integer");
   const forward = env.PI_CLAUDE_FORWARD_SUBAGENT_TEXT;
   if (forward !== undefined && forward !== "0" && forward !== "1")
     throw new Error("PI_CLAUDE_FORWARD_SUBAGENT_TEXT must be 0 or 1");
@@ -134,6 +137,7 @@ export function readRuntimeConfiguration(
     settings: {
       effort: effort as Effort | undefined,
       maxTurns,
+      maxOutputTokens,
       maxBudgetUsd: positiveNumber(env, "PI_CLAUDE_MAX_BUDGET_USD"),
       toolResultTimeoutMs:
         positiveNumber(env, "PI_CLAUDE_TOOL_TIMEOUT_MS") ?? 180_000,

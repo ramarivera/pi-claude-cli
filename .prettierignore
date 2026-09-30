@@ -5,3 +5,5 @@ coverage/
 *.tsbuildinfo
 package-lock.json
 .planning/
+.beads/
+.dolt/

@@ -242,6 +242,10 @@ export function createClaudeRuntime(
 ): ClaudeRuntime {
   const sessions = new Map<string, Session>();
   const opening = new Map<string, Promise<Session>>();
+  const acquiring = new Map<
+    string,
+    Promise<{ session: Session; rebuilt: boolean }>
+  >();
   const invalidated = new Map<string, HistoryInvalidationReason>();
   let closed = false;
 
@@ -837,7 +841,7 @@ export function createClaudeRuntime(
     return session;
   };
 
-  const acquire = async (
+  const acquireSession = async (
     request: HostRoundRequest,
   ): Promise<{ session: Session; rebuilt: boolean }> => {
     const key = request.session.sessionId;
@@ -990,6 +994,28 @@ export function createClaudeRuntime(
     }
   };
 
+  const acquire = (
+    request: HostRoundRequest,
+  ): Promise<{ session: Session; rebuilt: boolean }> => {
+    const key = request.session.sessionId;
+    const pending = acquiring.get(key);
+    if (pending)
+      return Promise.reject(
+        error(
+          "protocol",
+          "Another host round already owns this session acquisition",
+        ),
+      );
+    const operation = acquireSession(request);
+    acquiring.set(key, operation);
+    void operation
+      .finally(() => {
+        if (acquiring.get(key) === operation) acquiring.delete(key);
+      })
+      .catch(() => {});
+    return operation;
+  };
+
   return {
     async *streamRound(request): AsyncGenerator<ClaudeRoundEvent> {
       let session: Session | undefined, round: Round | undefined;
@@ -1132,10 +1158,6 @@ export function createClaudeRuntime(
               session.parked.delete(result.toolCallId);
               session.delivered.set(result.toolCallId, result);
             }
-            await Promise.race([
-              session.driver.deliverToolResults([...unique.values()]),
-              round.finished,
-            ]);
             if (request.input.steering?.length && !round.done) {
               session.expected.push({
                 role: "user",
@@ -1147,6 +1169,12 @@ export function createClaudeRuntime(
                   content: request.input.steering,
                   priority: "now",
                 }),
+                round.finished,
+              ]);
+            }
+            if (!round.done) {
+              await Promise.race([
+                session.driver.deliverToolResults([...unique.values()]),
                 round.finished,
               ]);
             }
@@ -1188,21 +1216,25 @@ export function createClaudeRuntime(
       reason: HistoryInvalidationReason,
     ): Promise<void> {
       invalidated.set(host.sessionId, reason);
-      const pending = opening.get(host.sessionId);
-      const session = pending ? await pending : sessions.get(host.sessionId);
+      const pending = acquiring.get(host.sessionId);
+      const session = pending
+        ? (await pending).session
+        : sessions.get(host.sessionId);
       if (session) {
         session.invalidated = reason;
         await dispose(session);
       }
     },
     async close(sessionId: string): Promise<void> {
-      const pending = opening.get(sessionId);
-      const session = pending ? await pending : sessions.get(sessionId);
+      const pending = acquiring.get(sessionId);
+      const session = pending
+        ? (await pending).session
+        : sessions.get(sessionId);
       if (session) await dispose(session);
     },
     async closeAll(): Promise<void> {
       closed = true;
-      await Promise.allSettled([...opening.values()]);
+      await Promise.allSettled([...acquiring.values(), ...opening.values()]);
       await Promise.all([...sessions.values()].map(dispose));
       sessions.clear();
     },
