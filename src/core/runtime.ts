@@ -44,6 +44,13 @@ interface ParkedCall {
   call: HostToolCall;
   timer: ReturnType<typeof setTimeout>;
 }
+interface CompletedProposal {
+  call: HostToolCall;
+  dispatched: boolean;
+  released: boolean;
+  resultForwarded: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+}
 interface Round {
   request: HostRoundRequest;
   channel: Channel<ClaudeRoundEvent>;
@@ -53,7 +60,6 @@ interface Round {
   finished: Promise<void>;
   settle: () => void;
   abort?: () => void;
-  proposalTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
 interface Session {
   identity: SessionIdentity;
@@ -64,6 +70,7 @@ interface Session {
   backlog: ClaudeDriverEvent[];
   parked: Map<string, ParkedCall>;
   delivered: Map<string, HostToolResult>;
+  completedProposals: Map<string, CompletedProposal>;
   projectedMessages: Set<string>;
   turnId?: string;
   turnUsage: Usage;
@@ -257,10 +264,13 @@ export function createClaudeRuntime(
     terminal?: Extract<ClaudeDriverEvent, { type: "turn_end" }>,
   ): void => {
     if (round.done) return;
+    if (reason === "toolUse")
+      for (const id of round.proposals.keys()) {
+        const proposal = session.completedProposals.get(id);
+        if (proposal) proposal.released = true;
+      }
     round.done = true;
     round.settle();
-    for (const timer of round.proposalTimers.values()) clearTimeout(timer);
-    round.proposalTimers.clear();
     round.request.signal?.removeEventListener(
       "abort",
       round.abort as EventListener,
@@ -339,6 +349,9 @@ export function createClaudeRuntime(
     if (session.closing) return session.closing;
     session.closed = true;
     for (const pending of session.parked.values()) clearTimeout(pending.timer);
+    for (const proposal of session.completedProposals.values())
+      clearTimeout(proposal.timer);
+    session.completedProposals.clear();
     session.parked.clear();
     if (session.active && !session.active.done)
       finish(
@@ -367,12 +380,41 @@ export function createClaudeRuntime(
     track(session, session.driver.interrupt(cause.message));
     void dispose(session).catch(() => {});
   };
+  const reject = (session: Session, cause: RuntimeError): void => {
+    if (session.active && !session.active.done)
+      abort(session, session.active, cause);
+    else {
+      session.failure = cause;
+      track(session, session.driver.interrupt(cause.message));
+      void dispose(session).catch(() => {});
+    }
+  };
+
+  const park = (session: Session, call: HostToolCall): void => {
+    if (session.parked.has(call.id)) return;
+    const timer = setTimeout(
+      () => {
+        if (!session.parked.has(call.id)) return;
+        reject(session, error("timeout", `Host result missing for ${call.id}`));
+      },
+      (session.active?.request ?? session.request).settings.toolResultTimeoutMs,
+    );
+    session.parked.set(call.id, {
+      call: copy(call) as HostToolCall,
+      timer,
+    });
+  };
 
   const maybeParked = (session: Session, round: Round): void => {
     if (round.done || round.proposals.size === 0 || round.messages.size === 0)
       return;
     if (![...round.messages.values()].every((msg) => msg.ended)) return;
-    if ([...round.proposals.keys()].every((id) => session.parked.has(id)))
+    if (
+      [...round.proposals.keys()].every((id) =>
+        session.completedProposals.has(id),
+      ) &&
+      [...round.proposals.keys()].some((id) => session.parked.has(id))
+    )
       finish(session, round, "toolUse");
   };
   const propose = (
@@ -409,28 +451,49 @@ export function createClaudeRuntime(
       ...call,
       arguments: structuredClone(call.arguments),
     });
-    // Claude dispatches tools after the assistant message ends. Even a finished
-    // tool block can precede more streamed blocks, so don't charge generation
-    // time against the deadline for reaching the MCP handler.
-    if (
-      dispatchReady &&
-      !session.parked.has(call.id) &&
-      !round.proposalTimers.has(call.id)
-    ) {
-      const timer = setTimeout(() => {
-        abort(session, round, {
-          ...error(
-            "timeout",
-            "Proposed host calls didn't all reach parked MCP handlers",
+    if (dispatchReady) {
+      const completed = session.completedProposals.get(call.id),
+        parked = session.parked.get(call.id);
+      if (
+        (completed && digest(completed.call) !== digest(call)) ||
+        (parked && digest(parked.call) !== digest(call))
+      ) {
+        abort(
+          session,
+          round,
+          error(
+            "tool-correlation",
+            "Completed host proposal conflicts with actual MCP metadata",
           ),
-          details: {
-            toolCallId: call.id.slice(0, 128),
-            toolName: call.name.slice(0, 128),
-            phase: "mcp-park",
-          },
-        });
-      }, round.request.settings.toolResultTimeoutMs);
-      round.proposalTimers.set(call.id, timer);
+        );
+        return false;
+      }
+      if (!completed) {
+        const proposal: CompletedProposal = {
+          call: copy(call) as HostToolCall,
+          dispatched: Boolean(parked),
+          released: false,
+          resultForwarded: false,
+        };
+        session.completedProposals.set(call.id, proposal);
+        // Native execution may release a serialized dispatcher one call at a
+        // time. This deadline survives host round completion and early results.
+        if (!parked)
+          proposal.timer = setTimeout(() => {
+            if (session.closed || proposal.dispatched) return;
+            reject(session, {
+              ...error(
+                "timeout",
+                "Proposed host calls didn't all reach parked MCP handlers",
+              ),
+              details: {
+                toolCallId: call.id.slice(0, 128),
+                toolName: call.name.slice(0, 128),
+                phase: "mcp-park",
+              },
+            });
+          }, round.request.settings.toolResultTimeoutMs);
+      }
     }
     return true;
   };
@@ -544,6 +607,43 @@ export function createClaudeRuntime(
       }
       session.identity.claudeSessionId = event.claudeSessionId;
     }
+    if (event.type === "host_tool_request" && !child) {
+      const completed = session.completedProposals.get(event.call.id);
+      if (completed) {
+        if (
+          digest(completed.call) !== digest(event.call) ||
+          (completed.dispatched && session.delivered.has(event.call.id))
+        ) {
+          reject(
+            session,
+            error(
+              "tool-correlation",
+              "Late MCP dispatch conflicts with the completed host proposal",
+            ),
+          );
+          return;
+        }
+        completed.dispatched = true;
+        clearTimeout(completed.timer);
+        if (completed.released) {
+          const result = session.delivered.get(event.call.id);
+          if (result && !completed.resultForwarded) {
+            completed.resultForwarded = true;
+            track(session, session.driver.deliverToolResults([result]));
+          } else if (!result) park(session, event.call);
+          return;
+        }
+      } else if (session.delivered.has(event.call.id)) {
+        reject(
+          session,
+          error(
+            "tool-correlation",
+            "Unknown late MCP dispatch lacks a completed host proposal",
+          ),
+        );
+        return;
+      }
+    }
     if (event.type === "interaction_request" && !replay) {
       if (
         !event.request.requestId ||
@@ -586,7 +686,15 @@ export function createClaudeRuntime(
         return;
       }
       if (event.type === "turn_end") {
-        if (session.parked.size && !child) {
+        if (
+          !child &&
+          (session.parked.size ||
+            [...session.completedProposals.values()].some(
+              (proposal) =>
+                !proposal.dispatched ||
+                !session.delivered.has(proposal.call.id),
+            ))
+        ) {
           session.failure = error(
             "tool-correlation",
             "Claude turn ended while host calls remained parked",
@@ -726,8 +834,8 @@ export function createClaudeRuntime(
                   return;
                 }
                 round.proposals.delete(old.id);
-                clearTimeout(round.proposalTimers.get(old.id));
-                round.proposalTimers.delete(old.id);
+                clearTimeout(session.completedProposals.get(old.id)?.timer);
+                session.completedProposals.delete(old.id);
               }
               prior.blocks.delete(index);
             }
@@ -775,30 +883,27 @@ export function createClaudeRuntime(
           break;
         }
         if (!propose(session, round, event.call)) break;
-        clearTimeout(round.proposalTimers.get(event.call.id));
-        round.proposalTimers.delete(event.call.id);
-        const timer = setTimeout(() => {
-          if (!session.parked.has(event.call.id)) return;
-          const cause = error(
-            "timeout",
-            `Host result missing for ${event.call.id}`,
-          );
-          if (session.active && !session.active.done)
-            abort(session, session.active, cause);
-          else {
-            session.failure = cause;
-            track(session, session.driver.interrupt(cause.message));
-            void dispose(session).catch(() => {});
-          }
-        }, round.request.settings.toolResultTimeoutMs);
-        session.parked.set(event.call.id, {
-          call: copy(event.call) as HostToolCall,
-          timer,
-        });
+        park(session, event.call);
         maybeParked(session, round);
         break;
       }
       case "turn_end": {
+        if (
+          [...session.completedProposals.values()].some(
+            (proposal) =>
+              !proposal.dispatched || !session.delivered.has(proposal.call.id),
+          )
+        ) {
+          abort(
+            session,
+            round,
+            error(
+              "tool-correlation",
+              "Claude turn ended before all host proposals were dispatched and settled",
+            ),
+          );
+          break;
+        }
         if (
           round.proposals.size &&
           [...round.proposals.keys()].some((id) => !session.delivered.has(id))
@@ -906,6 +1011,7 @@ export function createClaudeRuntime(
       backlog: [],
       parked: new Map(),
       delivered: new Map(),
+      completedProposals: new Map(),
       projectedMessages: new Set(),
       turnUsage: zero(),
       sequence: 0,
@@ -960,7 +1066,7 @@ export function createClaudeRuntime(
         );
       seen.set(result.toolCallId, result);
       if (previous && !previous.closed && !duplicate) {
-        const pending = previous.parked.get(result.toolCallId);
+        const pending = previous.completedProposals.get(result.toolCallId);
         if (!pending || pending.call.name !== result.toolName)
           throw error(
             "tool-correlation",
@@ -1157,7 +1263,6 @@ export function createClaudeRuntime(
           channel: new Channel(),
           messages: new Map(),
           proposals: new Map(),
-          proposalTimers: new Map(),
           done: false,
           finished,
           settle,
@@ -1181,13 +1286,22 @@ export function createClaudeRuntime(
         if (!round.done) {
           if (session.failure) finish(session, round, "error", session.failure);
           else if (request.input.kind === "prompt" || acquired.rebuilt) {
-            if (request.input.kind === "prompt" && session.parked.size)
+            if (
+              request.input.kind === "prompt" &&
+              (session.parked.size ||
+                [...session.completedProposals.values()].some(
+                  (proposal) =>
+                    !proposal.dispatched ||
+                    !owned.delivered.has(proposal.call.id),
+                ))
+            )
               throw new Error(
                 "Host tool results must settle before a new prompt",
               );
             session.turnId = request.roundId;
             session.turnUsage = zero();
             session.delivered.clear();
+            session.completedProposals.clear();
             const input = currentPrompt(request) ?? [
               {
                 type: "text" as const,
@@ -1215,7 +1329,7 @@ export function createClaudeRuntime(
                   );
                 continue;
               }
-              const pending = session.parked.get(result.toolCallId);
+              const pending = session.completedProposals.get(result.toolCallId);
               if (
                 !pending ||
                 !result.toolCallId ||
@@ -1251,8 +1365,17 @@ export function createClaudeRuntime(
               ]);
             }
             if (!round.done) {
+              const attested = [...unique.values()].filter((result) => {
+                const proposal = owned.completedProposals.get(
+                  result.toolCallId,
+                );
+                if (!proposal?.dispatched || proposal.resultForwarded)
+                  return false;
+                proposal.resultForwarded = true;
+                return true;
+              });
               await Promise.race([
-                session.driver.deliverToolResults([...unique.values()]),
+                session.driver.deliverToolResults(attested),
                 round.finished,
               ]);
             }
