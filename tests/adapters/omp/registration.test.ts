@@ -13,23 +13,22 @@ vi.mock(
 vi.mock("@oh-my-pi/pi-ai", async () => {
   const native = await import("@oh-my-pi/pi-ai/utils/event-stream");
   return {
+    getBundledModels: () => [
+      {
+        id: "claude-haiku-4-5",
+        name: "Haiku",
+        reasoning: false,
+        input: ["text", "image"],
+        cost: {},
+        contextWindow: 200000,
+        maxTokens: 64000,
+      },
+    ],
+
     createAssistantMessageEventStream: native.createAssistantMessageEventStream,
   };
 });
 vi.mock("@oh-my-pi/pi-coding-agent", () => ({ VERSION: "18.4.4" }));
-vi.mock("@oh-my-pi/pi-catalog/models", () => ({
-  getBundledModels: () => [
-    {
-      id: "claude-haiku-4-5",
-      name: "Haiku",
-      reasoning: false,
-      input: ["text", "image"],
-      cost: {},
-      contextWindow: 200000,
-      maxTokens: 64000,
-    },
-  ],
-}));
 import {
   assertOmpVersion,
   registerOmpAdapter,

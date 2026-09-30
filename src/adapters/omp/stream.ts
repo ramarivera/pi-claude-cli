@@ -121,13 +121,80 @@ export function projectRound(
         partial: snapshot(),
       });
   }
+  function reconcile(index: number, content: AssistantContent): void {
+    const block = message.content[index];
+    const next = nativeContent(content);
+    if (block.type !== next.type)
+      throw new Error("Claude snapshot conflicts with OMP content type");
+    if (
+      (block.type === "text" && next.type === "text") ||
+      (block.type === "thinking" && next.type === "thinking")
+    ) {
+      const currentText = block.type === "text" ? block.text : block.thinking;
+      const nextText = next.type === "text" ? next.text : next.thinking;
+      if (
+        !nextText.startsWith(currentText) &&
+        !currentText.startsWith(nextText)
+      )
+        throw new Error(
+          "Claude snapshot conflicts with already emitted OMP content",
+        );
+      const delta = nextText.startsWith(currentText)
+        ? nextText.slice(currentText.length)
+        : "";
+      if (delta && ended.has(index))
+        throw new Error(
+          "Claude snapshot changed a completed OMP content block",
+        );
+      if (
+        block.type === "thinking" &&
+        next.type === "thinking" &&
+        next.thinkingSignature !== undefined
+      ) {
+        if (
+          ended.has(index) &&
+          block.thinkingSignature !== next.thinkingSignature
+        )
+          throw new Error("Claude snapshot changed a completed OMP signature");
+        block.thinkingSignature = next.thinkingSignature;
+      }
+      if (delta) {
+        if (block.type === "text") {
+          block.text += delta;
+          stream.push({
+            type: "text_delta",
+            contentIndex: index,
+            delta,
+            partial: snapshot(),
+          });
+        } else {
+          block.thinking += delta;
+          stream.push({
+            type: "thinking_delta",
+            contentIndex: index,
+            delta,
+            partial: snapshot(),
+          });
+        }
+      }
+    } else if (JSON.stringify(block) !== JSON.stringify(next))
+      throw new Error(
+        "Claude snapshot conflicts with already emitted OMP content",
+      );
+  }
   function set(key: string, block: AssistantContent): number | undefined {
-    if (block.type === "tool_call") return undefined; // Only parked MCP calls execute in OMP.
+    if (block.type === "tool_call") return undefined;
     let index = slots.get(key);
     if (index === undefined) {
       index = message.content.length;
       slots.set(key, index);
-      message.content.push(nativeContent(block));
+      const initial = nativeContent(block);
+      if (initial.type === "text") initial.text = "";
+      if (initial.type === "thinking") {
+        initial.thinking = "";
+        initial.thinkingSignature = undefined;
+      }
+      message.content.push(initial);
       if (block.type === "text")
         stream.push({
           type: "text_start",
@@ -140,8 +207,32 @@ export function projectRound(
           contentIndex: index,
           partial: snapshot(),
         });
-    } else if (!ended.has(index)) message.content[index] = nativeContent(block);
+    }
+    reconcile(index, block);
     return index;
+  }
+  function hostCall(
+    call: Extract<AssistantContent, { type: "tool_call" }>,
+  ): void {
+    if (!allowed.has(call.name))
+      throw new Error(`Claude requested inactive OMP tool ${call.name}`);
+    if (toolIds.has(call.id)) {
+      const previous = message.content.find(
+        (block) => block.type === "toolCall" && block.id === call.id,
+      );
+      if (JSON.stringify(previous) !== JSON.stringify(nativeContent(call)))
+        throw new Error(`Conflicting host tool call ${call.id}`);
+      return;
+    }
+    toolIds.add(call.id);
+    const index = message.content.length;
+    message.content.push(nativeContent(call));
+    stream.push({
+      type: "toolcall_start",
+      contentIndex: index,
+      partial: snapshot(),
+    });
+    end(index);
   }
   void (async () => {
     try {
@@ -149,19 +240,26 @@ export function projectRound(
       for await (const item of runtime.streamRound(request)) {
         if (stream.done) break;
         if (item.type === "round_end") {
-          // Core is authoritative. Already-ended streamed content remains immutable.
-          const final = item.content
-            .filter(
-              (block) => block.type !== "tool_call" || toolIds.has(block.id),
-            )
-            .map((block, index) =>
-              ended.has(index) && message.content[index]
-                ? message.content[index]
-                : nativeContent(block),
+          // Reconcile authoritative core content without deleting emitted blocks.
+          let cursor = 0;
+          for (const block of item.content) {
+            if (block.type === "tool_call") {
+              if (item.pendingToolCallIds.includes(block.id)) hostCall(block);
+              continue;
+            }
+            const nativeType = nativeContent(block).type;
+            let index = message.content.findIndex(
+              (previous, position) =>
+                position >= cursor && previous.type === nativeType,
             );
+            if (index === -1) index = set(`terminal:${cursor}`, block) ?? -1;
+            if (index >= 0) {
+              reconcile(index, block);
+              cursor = index + 1;
+            }
+          }
           message = {
             ...message,
-            content: final,
             model: item.model ?? message.model,
             stopReason: item.reason,
             usage: usage(item.usage),
@@ -186,8 +284,12 @@ export function projectRound(
           return;
         }
         const event = item.event;
-        if (event.type === "initialized")
-          observation.claudeSessionId = event.claudeSessionId;
+        if (!event.attribution.parentToolUseId && !event.attribution.agentId) {
+          if (event.type === "initialized")
+            observation.claudeSessionId = event.claudeSessionId;
+          else if (event.attribution.claudeSessionId)
+            observation.claudeSessionId = event.attribution.claudeSessionId;
+        }
         if (!responded) {
           responded = true;
           await options.onResponse?.(
@@ -214,7 +316,8 @@ export function projectRound(
           );
         }
         observation.observe?.(event);
-        if (event.attribution.parentToolUseId) continue;
+        if (event.attribution.parentToolUseId || event.attribution.agentId)
+          continue;
         switch (event.type) {
           case "message_start":
             if (event.model) message.model = event.model;
@@ -224,32 +327,33 @@ export function projectRound(
             break;
           case "content_delta": {
             const index = slots.get(`${event.messageId}:${event.index}`);
-            if (index === undefined || ended.has(index)) break;
+            if (index === undefined) break;
             const block = message.content[index];
-            if (event.delta.kind === "text" && block.type === "text") {
-              block.text += event.delta.text;
-              stream.push({
-                type: "text_delta",
-                contentIndex: index,
-                delta: event.delta.text,
-                partial: snapshot(),
+            if (event.delta.kind === "text" && block.type === "text")
+              reconcile(index, {
+                type: "text",
+                text: block.text + event.delta.text,
               });
-            } else if (
+            else if (
               event.delta.kind === "thinking" &&
               block.type === "thinking"
-            ) {
-              block.thinking += event.delta.thinking;
-              stream.push({
-                type: "thinking_delta",
-                contentIndex: index,
-                delta: event.delta.thinking,
-                partial: snapshot(),
+            )
+              reconcile(index, {
+                type: "thinking",
+                thinking: block.thinking + event.delta.thinking,
+                signature: block.thinkingSignature,
               });
-            } else if (
+            else if (
               event.delta.kind === "signature" &&
               block.type === "thinking"
-            )
-              block.thinkingSignature = event.delta.signature;
+            ) {
+              if (ended.has(index))
+                throw new Error(
+                  "Claude delta changed a completed OMP signature",
+                );
+              block.thinkingSignature =
+                (block.thinkingSignature ?? "") + event.delta.signature;
+            }
             break;
           }
           case "content_end": {
@@ -266,24 +370,9 @@ export function projectRound(
             );
             if (event.model) message.model = event.model;
             break;
-          case "host_tool_request": {
-            const call = event.call;
-            if (!allowed.has(call.name))
-              throw new Error(
-                `Claude requested inactive OMP tool ${call.name}`,
-              );
-            if (toolIds.has(call.id)) break;
-            toolIds.add(call.id);
-            const index = message.content.length;
-            message.content.push(nativeContent(call));
-            stream.push({
-              type: "toolcall_start",
-              contentIndex: index,
-              partial: snapshot(),
-            });
-            end(index);
+          case "host_tool_request":
+            hostCall(event.call);
             break;
-          }
         }
       }
       throw new Error("Claude runtime ended without a provider round terminal");

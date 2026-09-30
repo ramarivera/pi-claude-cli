@@ -6,6 +6,7 @@ import type {
   SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
 import {
+  payloadForHook,
   normalizeTools,
   normalizeTranscript,
   replacePayload,
@@ -250,5 +251,88 @@ describe("native OMP request normalization", () => {
         input: { kind: "prompt", content: [{ type: "image" }] },
       }),
     ).toThrow("Invalid OMP payload input");
+  });
+  it("redacts hook credentials without changing driver auth and restricts tool inventory", () => {
+    const secret = {
+      ...request(),
+      auth: { mode: "api-key" as const, apiKey: "private-key" },
+    };
+    const publicRequest = payloadForHook(secret);
+    expect(publicRequest.auth).toEqual({
+      mode: "api-key",
+      apiKey: "[redacted]",
+    });
+    expect(
+      replacePayload(secret, { ...publicRequest, systemPrompt: "hook" }).auth,
+    ).toEqual(secret.auth);
+    expect(() =>
+      replacePayload(secret, {
+        ...publicRequest,
+        tools: [
+          { owner: "host", name: "injected", description: "", inputSchema: {} },
+        ],
+      }),
+    ).toThrow("effective inventory subset");
+    expect(() =>
+      replacePayload(secret, {
+        ...publicRequest,
+        auth: { mode: "api-key", apiKey: "replacement" },
+      }),
+    ).toThrow("can't replace auth");
+  });
+  it("preserves MCP structured content and metadata alongside native details", () => {
+    const details = {
+      structuredContent: { matches: 2 },
+      _meta: { correlation: "native" },
+      view: "table",
+    };
+    const [result] = normalizeTranscript({
+      messages: [
+        {
+          role: "toolResult",
+          toolCallId: "id",
+          toolName: "query",
+          content: [],
+          details,
+          isError: false,
+          timestamp: 0,
+        },
+      ],
+    });
+    expect(result).toMatchObject({
+      structuredContent: details.structuredContent,
+      _meta: details._meta,
+      details,
+    });
+  });
+  it("rejects explicit effort when a model can't reason", () => {
+    expect(() =>
+      toRequest(
+        model,
+        context,
+        {},
+        {
+          ...configuration,
+          settings: { ...configuration.settings, effort: "high" },
+        },
+        session,
+        "/project",
+      ),
+    ).toThrow("doesn't support Claude effort");
+  });
+  it("keeps prompt-hook edits synchronized with the trailing transcript prompt", () => {
+    const original = request();
+    const replacement = replacePayload(original, {
+      ...payloadForHook(original),
+      input: { kind: "prompt", content: [{ type: "text", text: "edited" }] },
+    });
+    expect(replacement.transcript.at(-1)).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "edited" }],
+    });
+    expect(replacement.input).toEqual({
+      kind: "prompt",
+      content: [{ type: "text", text: "edited" }],
+    });
   });
 });

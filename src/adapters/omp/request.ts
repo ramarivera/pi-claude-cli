@@ -85,8 +85,22 @@ export function normalizeTranscript(context: Context): TranscriptMessage[] {
       };
     }
     if (message.role === "toolResult") {
+      const details =
+        message.details === undefined
+          ? undefined
+          : json(message.details, "OMP tool result details");
+      const structuredContent =
+        record(details) && details.structuredContent !== undefined
+          ? jsonObject(details.structuredContent, "OMP structured tool result")
+          : undefined;
+      const resultMeta =
+        record(details) && details._meta !== undefined
+          ? jsonObject(details._meta, "OMP MCP result metadata")
+          : undefined;
       return {
         role: "tool_result",
+        ...(structuredContent ? { structuredContent } : {}),
+        ...(resultMeta ? { _meta: resultMeta } : {}),
         toolCallId: message.toolCallId,
         toolName: message.toolName,
         content: message.content.map((block) => ({ ...block })),
@@ -97,10 +111,13 @@ export function normalizeTranscript(context: Context): TranscriptMessage[] {
         ...(message.providerMetadata === undefined
           ? {}
           : {
-              _meta: jsonObject(
-                message.providerMetadata,
-                "OMP tool result metadata",
-              ),
+              _meta: {
+                ...resultMeta,
+                omp: jsonObject(
+                  message.providerMetadata,
+                  "OMP tool result metadata",
+                ),
+              },
             }),
       };
     }
@@ -172,6 +189,9 @@ export function toRequest(
     throw new Error(
       "OMP round requires a trailing user message or tool results",
     );
+  const requestedEffort = options.reasoning ?? configuration.settings.effort;
+  if (!model.reasoning && requestedEffort !== undefined)
+    throw new Error(`Model ${model.id} doesn't support Claude effort`);
   const effort =
     options.disableReasoning || options.forceReasoningOff || !model.reasoning
       ? undefined
@@ -222,20 +242,46 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Public request observation redacts configured credentials before user hooks run. */
+export function payloadForHook(original: HostRoundRequest): HostRoundRequest {
+  const copied = structuredClone({ ...original, signal: undefined });
+  if (copied.auth.mode === "api-key") copied.auth.apiKey = "[redacted]";
+  copied.settings = {
+    ...copied.settings,
+    userMcpServers: copied.settings.userMcpServers.map((server) => {
+      const config = { ...server.config };
+      if (config.type === "stdio" && config.env)
+        config.env = Object.fromEntries(
+          Object.keys(config.env).map((key) => [key, "[redacted]"]),
+        );
+      if ((config.type === "http" || config.type === "sse") && config.headers)
+        config.headers = Object.fromEntries(
+          Object.keys(config.headers).map((key) => [key, "[redacted]"]),
+        );
+      return { ...server, config };
+    }),
+  };
+  return { ...copied, signal: original.signal };
+}
+
 /** Hooks may edit useful request data, but can't replace session, auth or settings. */
 export function replacePayload(
   original: HostRoundRequest,
   replacement: unknown,
 ): HostRoundRequest {
-  if (replacement === undefined || replacement === original) return original;
+  if (replacement === undefined) return original;
   if (!record(replacement))
     throw new Error("OMP onPayload must return a HostRoundRequest");
   const data = jsonObject(
     { ...replacement, signal: undefined },
     "OMP payload replacement",
   );
+  const publicRequest = payloadForHook(original);
   for (const key of ["roundId", "session", "auth", "settings"] as const) {
-    if (JSON.stringify(data[key]) !== JSON.stringify(json(original[key], key)))
+    if (
+      JSON.stringify(data[key]) !==
+      JSON.stringify(json(publicRequest[key], key))
+    )
       throw new Error(`OMP onPayload can't replace ${key}`);
   }
   if (
@@ -258,6 +304,24 @@ export function replacePayload(
     )
   )
     throw new Error("Invalid OMP payload tools");
+  const names = new Set<string>();
+  for (const tool of data.tools as JsonValue[]) {
+    if (!record(tool) || typeof tool.name !== "string" || names.has(tool.name))
+      throw new Error(
+        "OMP onPayload tools must be an exact effective inventory subset",
+      );
+    names.add(tool.name);
+    const effective = original.tools.find(
+      (candidate) => candidate.name === tool.name,
+    );
+    if (
+      !effective ||
+      JSON.stringify(tool) !== JSON.stringify(json(effective, "effective tool"))
+    )
+      throw new Error(
+        "OMP onPayload tools must be an exact effective inventory subset",
+      );
+  }
   // Preserve correlated history/results; prompt edits are explicitly validated.
   if (
     JSON.stringify(data.transcript) !==

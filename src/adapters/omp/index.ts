@@ -1,4 +1,5 @@
-import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import * as OmpAI from "@oh-my-pi/pi-ai";
+import type * as OmpCatalog from "@oh-my-pi/pi-catalog/models";
 import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
 import { VERSION } from "@oh-my-pi/pi-coding-agent";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -8,7 +9,7 @@ import {
 } from "../../../entrypoints/runtime.js";
 import type { RuntimeConfiguration } from "../../../entrypoints/runtime.js";
 import type { ClaudeRuntime } from "../../contracts/index.js";
-import { replacePayload, toRequest } from "./request.js";
+import { payloadForHook, replacePayload, toRequest } from "./request.js";
 import { projectRound } from "./stream.js";
 
 export const OMP_VERSION = "18.4.4";
@@ -29,6 +30,12 @@ export function registerOmpAdapter(
   options: OmpAdapterOptions = {},
 ): void {
   assertOmpVersion(VERSION);
+  // OMP's extension loader re-exports the native catalog from its retained ai root.
+  // Type-only catalog import avoids resolving a second catalog in compiled hosts.
+  const { getBundledModels } = OmpAI as typeof OmpAI &
+    Pick<typeof OmpCatalog, "getBundledModels">;
+  if (typeof getBundledModels !== "function")
+    throw new Error("OMP native extension catalog export is unavailable");
   const configuration = options.configuration ?? readRuntimeConfiguration();
   const runtime = (options.runtimeFactory ?? createConfiguredRuntime)(
     configuration,
@@ -76,7 +83,7 @@ export function registerOmpAdapter(
             cwd,
           );
           const replacement = await streamOptions.onPayload?.(
-            request,
+            payloadForHook(request),
             model,
             streamOptions.signal,
           );

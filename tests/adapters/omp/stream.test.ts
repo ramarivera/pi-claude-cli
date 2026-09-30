@@ -268,4 +268,188 @@ describe("native OMP stream projection", () => {
     );
     expect(result.message.usage.input).toBe(5);
   });
+  it("streams snapshot-only text/thinking suffixes and appends split signatures", async () => {
+    const result = await collect(
+      projectRound(
+        model,
+        request,
+        {},
+        runtime([
+          driver({
+            type: "content_start",
+            messageId: "m",
+            index: 0,
+            content: { type: "thinking", thinking: "" },
+          }),
+          driver({
+            type: "content_delta",
+            messageId: "m",
+            index: 0,
+            delta: { kind: "signature", signature: "part1" },
+          }),
+          driver({
+            type: "content_delta",
+            messageId: "m",
+            index: 0,
+            delta: { kind: "signature", signature: "part2" },
+          }),
+          driver({
+            type: "assistant_snapshot",
+            messageId: "m",
+            contentIndexes: [0, 1],
+            content: [
+              {
+                type: "thinking",
+                thinking: "thought",
+                signature: "part1part2",
+              },
+              { type: "text", text: "hello" },
+            ],
+          }),
+          driver({
+            type: "assistant_snapshot",
+            messageId: "m",
+            contentIndexes: [1],
+            content: [{ type: "text", text: "hello world" }],
+          }),
+          {
+            type: "round_end",
+            roundId: "round",
+            reason: "stop",
+            pendingToolCallIds: [],
+            content: [
+              {
+                type: "thinking",
+                thinking: "thought",
+                signature: "part1part2",
+              },
+              { type: "text", text: "hello world" },
+            ],
+          },
+        ]),
+        { driver: "cli" },
+      ),
+    );
+    expect(
+      result.events
+        .filter((event) => event.type === "text_delta")
+        .map((event) => event.delta),
+    ).toEqual(["hello", " world"]);
+    expect(
+      result.events
+        .filter((event) => event.type === "thinking_delta")
+        .map((event) => event.delta),
+    ).toEqual(["thought"]);
+    expect(result.message.content[0]).toMatchObject({
+      thinkingSignature: "part1part2",
+    });
+  });
+  it.each(["conflict", "after-end"])(
+    "rejects %s snapshot rewrites with one error terminal",
+    async (kind) => {
+      const events: ClaudeRoundEvent[] = [
+        driver({
+          type: "assistant_snapshot",
+          messageId: "m",
+          content: [{ type: "text", text: "hello" }],
+        }),
+      ];
+      if (kind === "after-end")
+        events.push(driver({ type: "content_end", messageId: "m", index: 0 }));
+      events.push(
+        driver({
+          type: "assistant_snapshot",
+          messageId: "m",
+          content: [
+            {
+              type: "text",
+              text: kind === "conflict" ? "wrong" : "hello changed",
+            },
+          ],
+        }),
+      );
+      const result = await collect(
+        projectRound(model, request, {}, runtime(events), { driver: "cli" }),
+      );
+      expect(result.message.stopReason).toBe("error");
+      expect(result.message.content).toEqual([{ type: "text", text: "hello" }]);
+      expect(
+        result.events.filter((event) => event.type === "error"),
+      ).toHaveLength(1);
+    },
+  );
+  it("keeps agent-id-only child content out of the main stream and retains progress attribution", async () => {
+    const child = driver({
+      type: "assistant_snapshot",
+      messageId: "child",
+      content: [{ type: "text", text: "child-only" }],
+    });
+    if (child.type === "driver_event")
+      child.event.attribution = { agentId: "child-id", taskId: "task" };
+    const observe = vi.fn();
+    const result = await collect(
+      projectRound(
+        model,
+        request,
+        {},
+        runtime([
+          child,
+          {
+            type: "round_end",
+            roundId: "round",
+            reason: "stop",
+            pendingToolCallIds: [],
+            content: [{ type: "text", text: "main" }],
+          },
+        ]),
+        { driver: "cli", observe },
+      ),
+    );
+    expect(result.message.content).toEqual([{ type: "text", text: "main" }]);
+    expect(observe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attribution: { agentId: "child-id", taskId: "task" },
+      }),
+    );
+  });
+  it("reports the same authoritative resident id on a later round without another init", async () => {
+    const onResponse = vi.fn();
+    const first = driver({
+      type: "initialized",
+      claudeSessionId: "resident-id",
+      model: "claude",
+      runtimeVersion: "2",
+      capabilities: [],
+      tools: [],
+      mcpServers: [],
+    });
+    const next = driver({ type: "message_start", messageId: "next" });
+    if (next.type === "driver_event")
+      next.event.attribution.claudeSessionId = "resident-id";
+    for (const event of [first, next])
+      await collect(
+        projectRound(
+          model,
+          request,
+          { onResponse },
+          runtime([
+            event,
+            {
+              type: "round_end",
+              roundId: "round",
+              reason: "stop",
+              content: [],
+              pendingToolCallIds: [],
+            },
+          ]),
+          { driver: "cli" },
+        ),
+      );
+    expect(onResponse).toHaveBeenCalledTimes(2);
+    expect(
+      onResponse.mock.calls.map(
+        ([response]) => response.headers["x-pi-claude-session-id"],
+      ),
+    ).toEqual(["resident-id", "resident-id"]);
+  });
 });
