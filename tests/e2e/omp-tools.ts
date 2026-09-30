@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import {
+  normalizedObservation,
   providerPrompt,
   record,
   response,
@@ -10,6 +11,7 @@ import {
 
 export default function register(api: ExtensionAPI): void {
   const { Type } = api.typebox;
+  api.events.on("pi-claude-cli:observation", normalizedObservation);
   api.on("cache_warming_decision", () => ({ action: "stop" }));
   api.on("before_agent_start", (event) =>
     systemPrompt("before_agent_start", event.systemPrompt),

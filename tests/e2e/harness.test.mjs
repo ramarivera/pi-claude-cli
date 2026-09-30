@@ -4,6 +4,7 @@ import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { publicAssistant, publicStats, textProof } from "./diagnostics.mjs";
+import { hashlineProof } from "./hashline-proof.mjs";
 import {
   ROOT,
   RpcHost,
@@ -22,6 +23,84 @@ function runnerEnvironment(overrides) {
   delete env.NODE_TEST_CONTEXT;
   return env;
 }
+
+function hashlineEvents(input) {
+  return [
+    {
+      type: "tool-end",
+      data: {
+        toolName: "read",
+        isError: false,
+        result: {
+          content: [{ type: "text", text: "[fixture.txt#F27C]\n1:before" }],
+        },
+      },
+    },
+    {
+      type: "tool-start",
+      data: { toolName: "edit", toolCallId: "synthetic-edit", args: { input } },
+    },
+    {
+      type: "tool-end",
+      data: { toolName: "edit", toolCallId: "synthetic-edit", isError: false },
+    },
+  ];
+}
+
+test("native fixture hashline proof accepts paired wrappers and unwrapped successful edits", () => {
+  const body = "[fixture.txt#F27C]\nPUT 1.=1:\n+replacement";
+  for (const input of [
+    body,
+    body + "\n",
+    "*** Begin Patch\n" + body + "\n*** End Patch\n",
+  ])
+    assert.deepEqual(hashlineProof(hashlineEvents(input), "replacement\n"), {
+      args: { input },
+      readTag: "F27C",
+      fileBytes: "replacement\n",
+    });
+});
+
+test("hashline proof rejects mismatched tags, invalid syntax and Pi-style arguments", () => {
+  for (const input of [
+    "[fixture.txt#FFFF]\nPUT 1.=1:\n+replacement",
+    "[fixture.txt#F27C]\nPUT 0.=1:\n+replacement",
+    "[fixture.txt#F27C]\nPUT 1.=1:\nreplacement",
+    "[fixture.txt#F27C]\nPUT 1.=1:\n+replacement\nREM",
+    "*** Begin Patch\n[fixture.txt#F27C]\nPUT 1.=1:\n+replacement",
+    "[fixture.txt#F27C]\nPUT 1.=1:\n+replacement\n*** End Patch",
+    "*** Begin Patch\n*** Update File: fixture.txt\n@@\n-before\n+replacement\n*** End Patch",
+  ])
+    assert.throws(() => hashlineProof(hashlineEvents(input), "replacement\n"));
+  const events = hashlineEvents("[fixture.txt#F27C]\nPUT 1.=1:\n+replacement");
+  events[1].data.args = {
+    path: "fixture.txt",
+    oldText: "before",
+    newText: "replacement",
+  };
+  assert.throws(() => hashlineProof(events, "replacement\n"));
+});
+
+test("hashline proof requires one successful correlated native execution and changed bytes", () => {
+  const fixture = () =>
+    hashlineEvents("[fixture.txt#F27C]\nPUT 1.=1:\n+replacement");
+  for (const mutate of [
+    (events) => events.pop(),
+    (events) => events.push(events[0]),
+    (events) => events.push(events[1]),
+    (events) => {
+      events[2].data.isError = true;
+    },
+    (events) => {
+      events[2].data.toolCallId = "wrong-id";
+    },
+  ]) {
+    const events = fixture();
+    mutate(events);
+    assert.throws(() => hashlineProof(events, "replacement\n"));
+  }
+  assert.throws(() => hashlineProof(fixture(), "before\n"));
+});
 
 test("semantic marker failure retains synthetic text, final usage/error and stats", async () => {
   const script = `
@@ -111,6 +190,78 @@ test("public diagnostic projections exclude private payload fields", () => {
     publicStats({ tokens: { input: 4, auth: "secret" }, credential: "secret" }),
     { tokens: { input: 4 } },
   );
+});
+
+test("OMP normalized observations whitelist synthetic event metadata without payload values", async () => {
+  const { normalizedObservation } = await import("./observer.ts");
+  const sandbox = scratchDirectory("observer-");
+  const previous = process.env.PCC_E2E_OBSERVATIONS;
+  const path = join(sandbox, "observations.jsonl");
+  try {
+    process.env.PCC_E2E_OBSERVATIONS = path;
+    normalizedObservation({ owner: "other", event: { type: "observation" } });
+    normalizedObservation({
+      owner: "claude",
+      event: { type: "assistant_snapshot", content: "never-record" },
+    });
+    normalizedObservation({
+      owner: "claude",
+      privateAccount: "never-record",
+      event: {
+        type: "host_tool_request",
+        sequence: 7,
+        attribution: { toolUseId: "synthetic-id", apiKey: "never-record" },
+        call: {
+          id: "synthetic-id",
+          name: "edit",
+          arguments: { input: "never-record" },
+        },
+        data: { auth: "never-record" },
+      },
+    });
+    normalizedObservation({
+      owner: "claude",
+      event: {
+        type: "observation",
+        family: "user-input",
+        subtype: "user",
+        data: { text: "never-record" },
+      },
+    });
+    normalizedObservation({
+      owner: "claude",
+      event: {
+        type: "session_error",
+        error: {
+          code: "protocol",
+          message: "never-record",
+          details: { auth: "never-record" },
+        },
+      },
+    });
+    const raw = readFileSync(path, "utf8");
+    const events = raw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(events.length, 3);
+    assert.deepEqual(events[0], {
+      type: "normalized-observation",
+      data: {
+        type: "host_tool_request",
+        sequence: 7,
+        attribution: { toolUseId: "synthetic-id" },
+        call: { id: "synthetic-id", name: "edit", inputKeys: ["input"] },
+      },
+    });
+    assert.equal(events[1].data.family, "user-input");
+    assert.equal(events[2].data.errorCode, "protocol");
+    assert.equal(raw.includes("never-record"), false);
+  } finally {
+    if (previous === undefined) delete process.env.PCC_E2E_OBSERVATIONS;
+    else process.env.PCC_E2E_OBSERVATIONS = previous;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });
 
 test("native prompt observations retain only marker presence and effective length", async () => {
