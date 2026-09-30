@@ -41,12 +41,12 @@ The same Pi integration SHALL support SDK and CLI selection without losing activ
 
 ### Requirement: Pi lifecycle and compatibility migration
 
-The adapter SHALL implement supported shutdown/reload/compact/tree/branch behavior and publish tested version/legacy-entrypoint migration rules.
+The adapter SHALL implement supported shutdown/reload/compact/tree/branch behavior and publish tested current-version requirements. Legacy release support/migration is excluded by Ramiro on 2026-09-30.
 
 #### Scenario: Existing provider configuration
 
 - **WHEN** the user loads an existing provider ID or legacy entrypoint
-- **THEN** it loads through a compatibility path or receives explicit documented migration guidance
+- **THEN** the existing provider ID and root entrypoint load on the supported current release without a legacy compatibility layer
 
 #### Scenario: Unsupported Pi release
 

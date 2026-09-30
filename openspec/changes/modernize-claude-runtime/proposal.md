@@ -11,7 +11,7 @@ The extension targets old Pi contracts and assumes incomplete Claude payloads. C
 - Modernize event/control/error/usage handling, history reconciliation and tool ownership.
 - Improve unit coverage; add versioned replay, process/contract tests and real authenticated E2E for all four host/driver combinations.
 - Freeze shared interfaces before parallel work; give each lane exclusive paths and one integration owner for shared files.
-- **BREAKING candidates:** supported host contracts, tool schemas and session behavior have changed. Ratify version support and explicit legacy migration before code; preserve the existing provider ID/entrypoint through a documented compatibility path where supported.
+- **BREAKING candidates:** supported host contracts, tool schemas and session behavior have changed. Ratify version support and explicit current-only support (legacy migration excluded by Ramiro) before code; preserve the existing provider ID/entrypoint through a documented compatibility path where supported.
 
 ## Capabilities
 

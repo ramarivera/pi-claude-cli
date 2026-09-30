@@ -35,9 +35,9 @@ Core tracks host session/branch, actual Claude identity, driver, cwd, history/sc
 
 ### Compatibility and authentication policy
 
-Research baselines: canonical Pi 0.99.1, OMP 18.4.4, Claude 2.1.285; refresh version-specific primary source at implementation start. Policy gate records supported releases, exact dependencies, existing provider-ID/entrypoint/settings migration and legacy ^0.52.0 treatment before code. Do not silently drop old support or claim untested compatibility.
+Research baselines: canonical Pi 0.99.1, OMP 18.4.4, Claude 2.1.285; refresh version-specific primary source at implementation start. Policy gate records supported releases, exact dependencies and existing provider-ID/entrypoint behavior before code. Ramiro approved current-only support and removed legacy migration on 2026-09-30; see execution.md. Do not claim untested compatibility.
 
-Recommend SDK default once parity passes, with explicit CLI selection. Ratify final default and exact dependency/CI changes before manifest writes. Own Claude login via official runtime is supported; API-key mode or host-credential injection must be named choices with clear billing source. No silent Pi/OMP token pickup. Existing cost acknowledgement persists; missing login or usage specifics block only live testing.
+The approved default remains CLI, with explicit SDK selection. Exact new dependencies are approved in execution.md; no CI changes are planned. Own Claude login via official runtime is supported; API-key mode or host-credential injection must be named choices with clear billing source. No silent Pi/OMP token pickup. Existing cost acknowledgement persists; missing login or usage specifics block only live testing.
 
 ### Exclusive ownership and parallelism
 

@@ -1,6 +1,6 @@
 # Tasks: modernize Claude runtime
 
-Beads is the status/dependency authority. Every checkbox maps to exactly one child of `pcc-modernize`; only planning runs now. See design.md and lanes.json for frozen-interface rules and owned paths.
+Beads is the status/dependency authority. Every checkbox maps to exactly one child of `pcc-modernize`; implementation is authorized; see execution.md. See design.md and lanes.json for frozen-interface rules and owned paths.
 
 ## 0. Planning and explicit start gate
 
@@ -9,17 +9,17 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: none.
   - Acceptance: Strict OpenSpec validation, acyclic native beads graph, exact task mirror, complete disjoint file ownership and four E2E combinations; staged planning artifacts and no extension implementation.
 
-- [ ] 0.2 Wait for explicit implementation start instruction (`pcc-start`; lane `coordination`; 15 min).
+- [x] 0.2 Wait for explicit implementation start instruction (`pcc-start`; lane `coordination`; 15 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-plan`.
   - Acceptance: Ramiro explicitly instructs starting implementation; link that instruction in bead. Planning or a favourable design discussion alone doesn't satisfy this gate.
 
 ## 1. Policies, contracts and bootstrap
 
-- [ ] 1.1 Ratify compatibility and authentication execution policies (`pcc-policy`; lane `coordination`; 60 min).
+- [x] 1.1 Ratify compatibility and authentication execution policies (`pcc-policy`; lane `coordination`; 60 min).
   - Capabilities: `pi-adapter`, `omp-adapter`, `host-tool-handoff`, `session-lifecycle`, `sdk-driver`, `cli-driver`.
   - Blocked by: `pcc-start`.
-  - Acceptance: Record tested target version matrix and explicit legacy migration, default driver/auth and billing source, allowed Claude-internal/user-MCP owners, resident CLI session strategy, and approval for exact new dependencies or CI changes; update specs before code if externally visible choices change.
+  - Acceptance: Record tested target version matrix and explicit current-only support (legacy migration excluded by Ramiro), default driver/auth and billing source, allowed Claude-internal/user-MCP owners, resident CLI session strategy, and approval for exact new dependencies or CI changes; update specs before code if externally visible choices change.
 
 - [ ] 1.2 Freeze host-neutral driver and host interfaces (`pcc-contracts`; lane `contracts`; 90 min).
   - Capabilities: `claude-event-contract`, `host-tool-handoff`, `session-lifecycle`.
@@ -113,14 +113,14 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 - [ ] 8.1 Integrate all lanes and migrate legacy provider files (`pcc-cutover`; lane `integration`; 100 min).
   - Capabilities: `pi-adapter`, `omp-adapter`, `cli-driver`, `sdk-driver`, `session-lifecycle`.
   - Blocked by: `pcc-core-session`, `pcc-cli-control`, `pcc-sdk-handoff`, `pcc-pi-life`, `pcc-omp-life`, `pcc-e2e-harness`.
-  - Acceptance: Root entrypoint shims and Pi/OMP discovery manifests select same neutral core+config driver; old provider ID/config/session migration explicit; replace old tests only with mapped equivalent/improved coverage; inspect every lane diff and receipts; no overlapping shared-file mutations.
+  - Acceptance: Root entrypoint shims and Pi/OMP discovery manifests select same neutral core+config driver; existing provider ID/root entrypoint retained; legacy migration excluded; replace old tests only with mapped equivalent/improved coverage; inspect every lane diff and receipts; no overlapping shared-file mutations.
 
 - [ ] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-cutover`.
   - Acceptance: Lint/typecheck/unit/replay/process/contract suites fresh green for declared host versions; resolve hooks/failures without silencing tests/any; compare coverage inventory, module import isolation and no orphan children/temp resources; record commands and hashes.
 
-- [ ] 8.3 Prepare authenticated live-test account and usage limits (`pcc-live-access`; lane `coordination`; 30 min).
+- [x] 8.3 Prepare authenticated live-test account and usage limits (`pcc-live-access`; lane `coordination`; 30 min).
   - Capabilities: `verification-suite`, `sdk-driver`, `cli-driver`.
   - Blocked by: `pcc-start`.
   - Acceptance: Human completes own Claude login if absent, account/auth/billing source and bounded test usage agreed, installed supported CLI/hosts and writable isolated session roots confirmed without copying tokens; no secrets in chat or fixtures. Existing cost acknowledgement retained; only missing specifics requested before live execution.
@@ -133,4 +133,4 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 - [ ] 8.5 Finalize compatibility, migration and verification documentation (`pcc-docs`; lane `integration`; 60 min).
   - Capabilities: `pi-adapter`, `omp-adapter`, `verification-suite`, `sdk-driver`, `cli-driver`.
   - Blocked by: `pcc-live`.
-  - Acceptance: Document tested release matrix, entrypoint/driver/auth choice and differences, preserved/upgraded legacy behavior, installed-vs-source evidence and live tests; spec/tasks/bead evidence synchronized by coordinator; no publish/deploy/commit without session authorization.
+  - Acceptance: Document tested release matrix, entrypoint/driver/auth choice and differences, current supported behavior and excluded legacy migration, installed-vs-source evidence and live tests; spec/tasks/bead evidence synchronized by coordinator; no publish/deploy/commit without session authorization.
