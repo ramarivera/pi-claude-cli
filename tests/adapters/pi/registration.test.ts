@@ -209,6 +209,30 @@ describe("current Pi provider registration", () => {
         );
     },
   );
+  it("rejects minimal reasoning before opening a runtime", async () => {
+    const native = host();
+    const factory = vi.fn(async () => runtime([initialized(), terminal]));
+    registerPiAdapter(native.pi, { configuration, runtimeFactory: factory });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const events = await collect(
+      native
+        .provider()
+        .streamSimple(model, transcript(), { reasoning: "minimal" }),
+    );
+    expect(factory).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      {
+        type: "error",
+        reason: "error",
+        error: expect.objectContaining({
+          role: "assistant",
+          stopReason: "error",
+          errorMessage:
+            "Pi reasoning minimal isn't supported by the Claude runtime adapter",
+        }),
+      },
+    ]);
+  });
   it("doesn't claim a response when construction fails", async () => {
     const native = host();
     registerPiAdapter(native.pi, {

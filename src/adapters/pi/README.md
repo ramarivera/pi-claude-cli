@@ -29,7 +29,9 @@ as parent output. Thinking signatures, response models and incremental round
 usage survive projection. Catalog costs aren't used to invent usage; a reported
 Claude cost is recorded as a USD estimate, with unknown component costs zero.
 
-Supported Pi reasoning levels map to Claude effort (`minimal` maps to `low`).
+Supported Pi reasoning levels pass through as Claude effort. Pi `minimal` is
+explicitly unsupported; the drivers accept `low`, `medium`, `high`, `xhigh` and
+`max` subject to the exact model's reported capabilities.
 Models with reasoning disabled reject an explicit effort. Custom fetch/headers,
 HTTP retry and timeout settings, sampling/temperature/token limits, transport
 preferences, metadata, tool choice, deferred responses and custom thinking token
