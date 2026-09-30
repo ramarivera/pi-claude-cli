@@ -256,6 +256,99 @@ async function started(
 }
 
 describe("Claude runtime session ownership (offline)", () => {
+  it("exposes the unended message blocking a parked handoff without assistant text or arguments", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      step(session, "previous", [call("a")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        a = toolResult("a");
+      const second = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+            ],
+            input: { kind: "tool-results", results: [a] },
+          }),
+        ),
+      );
+      await vi.waitFor(() => expect(session.results).toEqual([a]));
+      session.emit({
+        type: "assistant_snapshot",
+        messageId: "current",
+        content: [
+          { type: "text", text: "private assistant text" },
+          { ...call("b"), arguments: { path: "private path" } },
+        ],
+        attribution: {},
+      });
+      session.park({ ...call("b"), arguments: { path: "private path" } });
+      const original: UnsequencedClaudeDriverEvent = {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "host-mcp-park",
+        data: { toolCallId: "b" },
+        attribution: {},
+      };
+      session.emit(original);
+      session.emit({
+        type: "message_end",
+        messageId: "current",
+        attribution: {},
+      });
+      const events = await second;
+      const trace = events.find(
+        (event) =>
+          event.type === "driver_event" &&
+          event.event.type === "observation" &&
+          event.event.subtype === "host-mcp-park",
+      );
+      expect(trace).toMatchObject({
+        type: "driver_event",
+        event: {
+          data: {
+            toolCallId: "b",
+            runtimeBoundary: {
+              roundDone: false,
+              messageCount: 1,
+              messages: [
+                {
+                  messageId: "current",
+                  ended: false,
+                  blockCount: 2,
+                  toolCallIds: ["b"],
+                },
+              ],
+              unendedMessageIds: ["current"],
+              proposalCount: 1,
+              proposalIds: ["b"],
+              unparkedProposalIds: [],
+              parkedCount: 1,
+              parkedIds: ["b"],
+              deliveredCount: 1,
+              deliveredIds: ["a"],
+            },
+          },
+        },
+      });
+      expect(JSON.stringify(trace)).not.toContain("private");
+      expect(original).toMatchObject({ data: { toolCallId: "b" } });
+      expect(
+        original.type === "observation" && original.data,
+      ).not.toHaveProperty("runtimeBoundary");
+      expect(outcome(events).reason).toBe("toolUse");
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
   it.each([false, true])(
     "rejects unsupported steering before replay when a parked session exists: %s",
     async (parked) => {
@@ -1399,6 +1492,99 @@ describe("Claude runtime session ownership (offline)", () => {
     await runtime.closeAll();
   });
 
+  it("releases a resident host round when an older raw snapshot arrives during its current tool stream", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      const raw = (event: unknown) =>
+        session.raw({
+          type: "stream_event",
+          session_id: "claude-1",
+          parent_tool_use_id: null,
+          event,
+        });
+      const header = (messageId: string, toolCallId: string) => {
+        raw({ type: "message_start", message: { id: messageId } });
+        raw({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: toolCallId,
+            name: "mcp__host__read",
+            input: { path: toolCallId },
+          },
+        });
+      };
+      const end = () => {
+        raw({ type: "content_block_stop", index: 0 });
+        raw({ type: "message_delta", delta: { stop_reason: "tool_use" } });
+        raw({ type: "message_stop" });
+      };
+      header("previous", "a");
+      end();
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(0);
+      const one = outcome(await first),
+        a = toolResult("a");
+      const second = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+            ],
+            input: { kind: "tool-results", results: [a] },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      header("current", "b");
+      session.raw({
+        type: "assistant",
+        session_id: "claude-1",
+        parent_tool_use_id: null,
+        uuid: "late-previous",
+        message: {
+          id: "previous",
+          stop_reason: "tool_use",
+          content: [
+            {
+              type: "tool_use",
+              id: "a",
+              name: "mcp__host__read",
+              input: { path: "a" },
+            },
+          ],
+        },
+      });
+      end();
+      session.park(call("b"));
+      let completed: ClaudeRoundEvent[] | undefined;
+      void second.then((events) => {
+        completed = events;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed && outcome(completed)).toMatchObject({
+        reason: "toolUse",
+        content: [call("b")],
+        pendingToolCallIds: ["b"],
+      });
+      expect(session.closeCount).toBe(0);
+      expect(driver.opened).toHaveLength(1);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a cost-only final usage report after earlier tool-round accounting", async () => {
     const driver = new OfflineDriver(),
       runtime = createClaudeRuntime({ driver });
@@ -2218,5 +2404,417 @@ describe("Claude runtime session ownership (offline)", () => {
       auth: { mode: "claude-login" },
     });
     await runtime.closeAll();
+  });
+  it("doesn't spend the MCP parking deadline while tool JSON is still streaming", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const pending = collect(
+        runtime.streamRound(
+          request({
+            settings: { ...request().settings, toolResultTimeoutMs: 20 },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      session.emit({
+        type: "message_start",
+        messageId: "streamed",
+        attribution: {},
+      });
+      session.emit({
+        type: "content_start",
+        messageId: "streamed",
+        index: 0,
+        content: { ...call("a"), arguments: {} },
+        attribution: {},
+      });
+      session.emit({
+        type: "content_delta",
+        messageId: "streamed",
+        index: 0,
+        delta: { kind: "tool-input", partialJson: '{"path":' },
+        attribution: {},
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(session.closeCount).toBe(0);
+      expect(session.interruptCount).toBe(0);
+      session.emit({
+        type: "content_delta",
+        messageId: "streamed",
+        index: 0,
+        delta: { kind: "tool-input", partialJson: '"a"}' },
+        attribution: {},
+      });
+      session.emit({
+        type: "content_end",
+        messageId: "streamed",
+        index: 0,
+        attribution: {},
+      });
+      session.emit({
+        type: "message_end",
+        messageId: "streamed",
+        attribution: {},
+      });
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome(await pending)).toMatchObject({
+        reason: "toolUse",
+        content: [call("a")],
+        pendingToolCallIds: ["a"],
+      });
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+  it.each(["content_end", "assistant_snapshot", "message_end"] as const)(
+    "bounds a %s proposal once the message ends and it never reaches MCP",
+    async (completion) => {
+      vi.useFakeTimers();
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      try {
+        const pending = collect(
+          runtime.streamRound(
+            request({
+              settings: { ...request().settings, toolResultTimeoutMs: 20 },
+            }),
+          ),
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        const session = driver.sessions[0];
+        session.emit({
+          type: "content_start",
+          messageId: "m",
+          index: 0,
+          content: call("a"),
+          attribution: {},
+        });
+        if (completion === "assistant_snapshot")
+          session.emit({
+            type: completion,
+            messageId: "m",
+            content: [call("a")],
+            contentIndexes: [0],
+            attribution: {},
+          });
+        else if (completion === "content_end")
+          session.emit({
+            type: completion,
+            messageId: "m",
+            index: 0,
+            attribution: {},
+          });
+        else
+          session.emit({ type: completion, messageId: "m", attribution: {} });
+        if (completion !== "message_end") {
+          await vi.advanceTimersByTimeAsync(100);
+          expect(session.closeCount).toBe(0);
+          session.emit({
+            type: "message_end",
+            messageId: "m",
+            attribution: {},
+          });
+        }
+        await vi.advanceTimersByTimeAsync(21);
+        expect(outcome(await pending)).toMatchObject({
+          reason: "error",
+          error: {
+            code: "timeout",
+            details: { toolCallId: "a", toolName: "read", phase: "mcp-park" },
+          },
+        });
+      } finally {
+        await runtime.closeAll();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("waits for the entire message while a later parallel tool block is still streaming", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const pending = collect(
+        runtime.streamRound(
+          request({
+            settings: { ...request().settings, toolResultTimeoutMs: 20 },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      session.emit({
+        type: "content_start",
+        messageId: "m",
+        index: 0,
+        content: call("a"),
+        attribution: {},
+      });
+      session.emit({
+        type: "content_end",
+        messageId: "m",
+        index: 0,
+        attribution: {},
+      });
+      session.emit({
+        type: "content_start",
+        messageId: "m",
+        index: 1,
+        content: call("b"),
+        attribution: {},
+      });
+      session.emit({
+        type: "content_delta",
+        messageId: "m",
+        index: 1,
+        delta: { kind: "tool-input", partialJson: '{"path":' },
+        attribution: {},
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(session.closeCount).toBe(0);
+      expect(session.interruptCount).toBe(0);
+      session.emit({
+        type: "content_delta",
+        messageId: "m",
+        index: 1,
+        delta: { kind: "tool-input", partialJson: '"b"}' },
+        attribution: {},
+      });
+      session.emit({
+        type: "content_end",
+        messageId: "m",
+        index: 1,
+        attribution: {},
+      });
+      session.emit({ type: "message_end", messageId: "m", attribution: {} });
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(session.closeCount).toBe(0);
+      session.park(call("b"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome(await pending)).toMatchObject({
+        reason: "toolUse",
+        pendingToolCallIds: ["a", "b"],
+      });
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports the missing parallel handler after another call parks", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const pending = collect(
+        runtime.streamRound(
+          request({
+            settings: { ...request().settings, toolResultTimeoutMs: 20 },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      step(session, "parallel", [call("a"), call("b")]);
+      await vi.advanceTimersByTimeAsync(5);
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(16);
+      expect(outcome(await pending)).toMatchObject({
+        reason: "error",
+        error: {
+          code: "timeout",
+          details: { toolCallId: "b", toolName: "read", phase: "mcp-park" },
+        },
+      });
+      expect(session.cancellations.map((result) => result.toolCallId)).toEqual([
+        "a",
+      ]);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the MCP handoff from a definitive full assistant snapshot without stream frames", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const pending = collect(
+        runtime.streamRound(
+          request({
+            settings: { ...request().settings, toolResultTimeoutMs: 20 },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      session.raw({
+        type: "assistant",
+        message: {
+          id: "snapshot-only",
+          stop_reason: "tool_use",
+          content: [
+            {
+              type: "tool_use",
+              id: "a",
+              name: "mcp__host__read",
+              input: { path: "a" },
+            },
+          ],
+        },
+      });
+      await vi.advanceTimersByTimeAsync(21);
+      expect(outcome(await pending)).toMatchObject({
+        reason: "error",
+        error: {
+          code: "timeout",
+          details: { toolCallId: "a", toolName: "read", phase: "mcp-park" },
+        },
+      });
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a resident read/edit/final flow alive while native edit arguments with intent stream slowly", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const configured = request({
+      settings: { ...request().settings, toolResultTimeoutMs: 20 },
+    });
+    configured.tools = [
+      ...configured.tools,
+      {
+        name: "edit",
+        owner: "host",
+        description: "Native edit",
+        inputSchema: {
+          type: "object",
+          properties: { input: { type: "string" }, i: { type: "string" } },
+          required: ["input", "i"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    try {
+      const first = collect(runtime.streamRound(configured));
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      step(session, "read", [call("read-id")]);
+      session.park(call("read-id"));
+      await vi.advanceTimersByTimeAsync(0);
+      const one = outcome(await first);
+      const read = toolResult("read-id"),
+        history: TranscriptMessage[] = [
+          user,
+          assistant(one.content, "toolUse"),
+          { role: "tool_result", ...read },
+        ];
+      const second = collect(
+        runtime.streamRound({
+          ...configured,
+          roundId: "edit-round",
+          transcript: history,
+          input: { kind: "tool-results", results: [read] },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const normalizer = createClaudeEventNormalizer({
+        tools: configured.tools,
+        hostMcpServerName: "host",
+        requestedModel: "model",
+      });
+      const emitRaw = (event: unknown) => {
+        for (const normalized of normalizer.normalize({
+          type: "stream_event",
+          session_id: "claude-1",
+          parent_tool_use_id: null,
+          event,
+        }))
+          session.emit(normalized);
+      };
+      emitRaw({
+        type: "message_start",
+        message: { id: "edit-message", model: "model" },
+      });
+      emitRaw({
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "edit-id",
+          name: "mcp__host__edit",
+          input: {},
+        },
+      });
+      emitRaw({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: '{"input":' },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(session.closeCount).toBe(0);
+      const args = {
+        input: "[fixture.txt#F27C]\nPUT 1.=1:\n+replacement",
+        i: "replace line 1 with replacement",
+      };
+      const remainder = JSON.stringify(args).slice('{"input":'.length);
+      emitRaw({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: remainder },
+      });
+      emitRaw({ type: "content_block_stop", index: 0 });
+      emitRaw({ type: "message_delta", delta: { stop_reason: "tool_use" } });
+      emitRaw({ type: "message_stop" });
+      const editCall: HostToolCall = {
+        type: "tool_call",
+        id: "edit-id",
+        name: "edit",
+        arguments: args,
+      };
+      session.park(editCall);
+      await vi.advanceTimersByTimeAsync(0);
+      const two = outcome(await second);
+      expect(two.content).toEqual([editCall]);
+      expect(two.reason).toBe("toolUse");
+      const edit = { ...toolResult("edit-id"), toolName: "edit" };
+      history.push(assistant(two.content, "toolUse"), {
+        role: "tool_result",
+        ...edit,
+      });
+      session.onResults = () => {
+        step(session, "final", [{ type: "text", text: "done" }]);
+        success(session);
+      };
+      const third = collect(
+        runtime.streamRound({
+          ...configured,
+          roundId: "final-round",
+          transcript: history,
+          input: { kind: "tool-results", results: [edit] },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome(await third).reason).toBe("stop");
+      expect(driver.opened).toHaveLength(1);
+      expect(session.results.map((result) => result.toolCallId)).toEqual([
+        "read-id",
+        "edit-id",
+      ]);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
   });
 });

@@ -427,6 +427,11 @@ class SdkSession implements ClaudeDriverSession {
         ...(payload.type === "host_tool_request"
           ? { toolUseId: payload.call.id }
           : {}),
+        ...(payload.type === "observation" &&
+        payload.subtype === "host-mcp-park" &&
+        typeof payload.data.toolUseId === "string"
+          ? { toolUseId: payload.data.toolUseId }
+          : {}),
         ...Object.fromEntries(
           Object.entries(attribution).filter(
             ([, value]) => value !== undefined,

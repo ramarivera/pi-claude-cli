@@ -12,12 +12,13 @@ OMP's managed `setTimeout`/`clearTimer` honor first-event and stream-idle deadli
 
 `onPayload` observes a detached request with auth and configured MCP credentials redacted. Replacements can change model, cwd, system prompt, prompt content or an exact effective-tool subset. They can't replace auth, settings, session or correlated history/results. Prompt replacements update the trailing transcript prompt as well.
 
-`onResponse` fires once per round after an actual transport event, before content projection. It reports status `0`, driver/transport headers and an authoritative initialized or attributed Claude session ID when available. Metadata labels history replay, unsupported live steering and Claude's reported USD estimate. Incremental `round_end` usage is the host allocation; cumulative turn usage isn't added again. Unknown cost components stay zero.
+`onResponse` fires once per round after the current main event carries an authoritative Claude session ID or an actual initialization/failure event arrives, before projecting that event. Cached IDs never attest a replacement session. Startup diagnostics wait for initialization; startup failures report truthful metadata without inventing a session ID. It reports status `0`, driver/transport headers and an authoritative initialized or attributed Claude session ID when available. Metadata labels history replay, unsupported live steering and Claude's reported USD estimate. Incremental `round_end` usage is the host allocation; cumulative turn usage isn't added again. Unknown cost components stay zero.
 
 OMP has no generic provider-stream-event extension hook. Claude task/progress/status observations use `ctx.ui.setStatus` and the native extension event bus:
 
 - `pi-claude-cli:observation`: Claude ownership, host session/agent identity, and the normalized event with its attribution.
 - `pi-claude-cli:capability`: explicit unsupported live-steering observation.
+- `pi-claude-cli:diagnostic`: metadata-only projection of `core-message-start`, `core-message-stop`, `core-assistant-snapshot` and `host-mcp-park`. It retains known message/tool/session IDs, ended flags, block metadata and runtime boundary counts/ID sets. Every nested object and host identity is whitelisted; arrays are capped at 32 entries and IDs at 128 characters. Unknown fields/subtypes and raw text, arguments, schemas, credentials and errors are dropped. Diagnostics never update UI status.
 
 Claude internal tasks never become OMP-native task executions. Neither current driver claims OMP's queued live steering. Already-dequeued boundary steering remains explicit in the neutral request so the runtime can reject it without new inference or tool-result loss.
 

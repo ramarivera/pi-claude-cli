@@ -341,6 +341,13 @@ class CliSession implements ClaudeDriverSession {
       );
       socket.on("close", () => {
         this.sockets.delete(socket);
+        this.emit({
+          type: "observation",
+          family: "diagnostic",
+          subtype: "host-mcp-transport",
+          data: { phase: "socket-closed", sessionClosing: this.closed },
+          attribution: {},
+        });
         for (const [id, pending] of this.settlements)
           if (pending.socket === socket) {
             clearTimeout(pending.timer);
@@ -580,6 +587,48 @@ class CliSession implements ClaudeDriverSession {
       .slice(-4096);
   }
   private hostCall(packet: unknown, socket: Socket): void {
+    if (record(packet) && packet.type === "diagnostic") {
+      const phases = [
+        "ready",
+        "tools-listed",
+        "call-received",
+        "missing-tool-use-id",
+        "unknown-tool",
+        "duplicate-tool-use-id",
+        "call-frame-limit",
+        "protocol-error",
+        "server-closed",
+        "stdin-ended",
+      ];
+      if (typeof packet.phase !== "string" || !phases.includes(packet.phase))
+        throw new Error("Malformed host MCP diagnostic");
+      const hasCall = [
+        "call-received",
+        "duplicate-tool-use-id",
+        "call-frame-limit",
+      ].includes(packet.phase);
+      if (
+        hasCall &&
+        (typeof packet.id !== "string" ||
+          !packet.id ||
+          typeof packet.name !== "string" ||
+          !this.request.tools.some((tool) => tool.name === packet.name))
+      )
+        throw new Error("Malformed host MCP diagnostic attribution");
+      this.emit({
+        type: "observation",
+        family: "diagnostic",
+        subtype: "host-mcp-transport",
+        data: {
+          phase: packet.phase,
+          ...(hasCall
+            ? { id: packet.id as string, name: packet.name as string }
+            : {}),
+        },
+        attribution: hasCall ? { toolUseId: packet.id as string } : {},
+      });
+      return;
+    }
     if (
       record(packet) &&
       packet.type === "settled" &&

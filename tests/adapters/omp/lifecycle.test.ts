@@ -24,6 +24,7 @@ vi.mock("@oh-my-pi/pi-ai", async () => {
 });
 vi.mock("@oh-my-pi/pi-coding-agent", () => ({ VERSION: "18.4.4" }));
 import { registerOmpAdapter } from "../../../src/adapters/omp/index.js";
+import { OmpLifecycle } from "../../../src/adapters/omp/lifecycle.js";
 
 const model = {
   id: "claude-haiku-4-5",
@@ -312,6 +313,62 @@ describe("native OMP lifecycle", () => {
       expect.objectContaining({ owner: "claude", hostAgent: ctx.agent, event }),
     );
     expect(host.requests[0].tools).toEqual([]);
+  });
+  it("publishes diagnostics only on the safe bus with whitelisted host identity and no UI", () => {
+    const host = setup();
+    const ctx = context();
+    Object.assign(ctx.agent, {
+      parentId: "Parent",
+      name: "never",
+      raw: { credentials: "never" },
+    });
+    const lifecycle = new OmpLifecycle(async () => host.runtime);
+    lifecycle.capture(ctx);
+    const state = lifecycle.session({});
+    Object.assign(state.identity, { raw: "never" });
+    const api = { events: host.events } as unknown as ExtensionAPI;
+    lifecycle.observe(api, state, {
+      type: "observation",
+      family: "diagnostic",
+      subtype: "host-mcp-park",
+      sequence: 1,
+      attribution: { toolUseId: "call" },
+      data: {
+        toolUseId: "call",
+        toolName: "edit",
+        serverName: "host",
+        arguments: { input: "never" },
+      },
+    });
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+    expect(host.events.emit).toHaveBeenCalledOnce();
+    expect(host.events.emit).toHaveBeenCalledWith("pi-claude-cli:diagnostic", {
+      owner: "claude",
+      hostSession: {
+        sessionId: "host",
+        branchId: "root",
+        historyRevision: "0",
+      },
+      hostAgent: { kind: "main", id: "Main", parentId: "Parent" },
+      event: {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "host-mcp-park",
+        sequence: 1,
+        attribution: { toolUseId: "call" },
+        data: { toolUseId: "call", toolName: "edit", serverName: "host" },
+      },
+    });
+    lifecycle.observe(api, state, {
+      type: "observation",
+      family: "diagnostic",
+      subtype: "unknown-packet",
+      sequence: 2,
+      attribution: {},
+      data: { raw: "never" },
+    });
+    expect(host.events.emit).toHaveBeenCalledOnce();
+    expect(JSON.stringify(host.events.emit.mock.calls)).not.toContain("never");
   });
   it("reports live steering unsupported without claiming queued steering", async () => {
     const host = setup();

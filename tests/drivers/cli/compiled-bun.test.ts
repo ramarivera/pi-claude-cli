@@ -5,9 +5,9 @@ import { expect, it } from "vitest";
 
 /** Optional local integration target: the installed compiled OMP executable, not inference. */
 const compiledBunExecutable = process.env.PCC_COMPILED_BUN_EXECUTABLE;
-it.skipIf(!compiledBunExecutable)(
-  "runs the private MCP endpoint with actual compiled Bun and keeps Claude's environment unchanged (offline)",
-  async () => {
+it.skipIf(!compiledBunExecutable).each(["tools", "native-sequence"])(
+  "runs %s with actual compiled Bun and keeps Claude's environment unchanged (offline)",
+  async (mode) => {
     const probe = fileURLToPath(
       new URL("./compiled-bun-probe.mjs", import.meta.url),
     );
@@ -17,7 +17,7 @@ it.skipIf(!compiledBunExecutable)(
     const stdout = await new Promise<string>((resolve, reject) => {
       execFile(
         compiledBunExecutable!,
-        [probe, fixture],
+        [probe, fixture, mode],
         {
           cwd: process.cwd(),
           env: { ...process.env, BUN_BE_BUN: "1" },
@@ -32,8 +32,21 @@ it.skipIf(!compiledBunExecutable)(
       privateMcpMode: "1",
       claudeInheritedBunMode: false,
       advertisedSchema: true,
-      calls: ["tool-a", "tool-b"],
-      results: ["tool-a", "tool-b"],
+      calls:
+        mode === "tools"
+          ? ["tool-a", "tool-b"]
+          : [
+              "toolu_019MQnr1hrXbz88TbmDn9End",
+              "toolu_01Qb5GdCWMM4CvQefY4YJrGw",
+            ],
+      results:
+        mode === "tools"
+          ? ["tool-a", "tool-b"]
+          : [
+              "toolu_019MQnr1hrXbz88TbmDn9End",
+              "toolu_01Qb5GdCWMM4CvQefY4YJrGw",
+            ],
+      nativeSequence: mode === "native-sequence",
       cleaned: true,
     });
   },

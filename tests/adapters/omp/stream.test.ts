@@ -71,6 +71,176 @@ async function collect(source: ReturnType<typeof projectRound>) {
 }
 
 describe("native OMP stream projection", () => {
+  it("waits through startup diagnostics for one authoritative response ID", async () => {
+    const onResponse = vi.fn();
+    const observe = vi.fn((event: ClaudeDriverEvent) => {
+      if (event.type === "observation")
+        expect(onResponse).not.toHaveBeenCalled();
+    });
+    const result = await collect(
+      projectRound(
+        model,
+        request,
+        { onResponse },
+        runtime([
+          driver({
+            type: "observation",
+            family: "diagnostic",
+            subtype: "startup",
+            data: {},
+          }),
+          driver({
+            type: "initialized",
+            claudeSessionId: "authoritative-id",
+            model: "claude",
+            runtimeVersion: "2",
+            capabilities: [],
+            tools: [],
+            mcpServers: [],
+          }),
+          driver({ type: "message_start", messageId: "m" }),
+          {
+            type: "round_end",
+            roundId: "round",
+            reason: "stop",
+            content: [{ type: "text", text: "READY" }],
+            pendingToolCallIds: [],
+          },
+        ]),
+        { driver: "cli", observe },
+      ),
+    );
+    expect(result.message.stopReason).toBe("stop");
+    expect(onResponse).toHaveBeenCalledOnce();
+    expect(onResponse.mock.calls[0][0]).toMatchObject({
+      status: 0,
+      headers: { "x-pi-claude-session-id": "authoritative-id" },
+    });
+  });
+  it("reports a startup transport failure truthfully without a session ID", async () => {
+    const onResponse = vi.fn();
+    const backend = runtime([
+      driver({
+        type: "observation",
+        family: "diagnostic",
+        subtype: "startup",
+        data: {},
+      }),
+      driver({
+        type: "session_error",
+        error: { code: "transport", message: "startup failed" },
+      }),
+      {
+        type: "round_end",
+        roundId: "round",
+        reason: "error",
+        content: [],
+        pendingToolCallIds: [],
+        error: { code: "transport", message: "startup failed" },
+      },
+    ]);
+    const result = await collect(
+      projectRound(model, request, { onResponse }, backend, {
+        driver: "cli",
+        claudeSessionId: "stale-id",
+      }),
+    );
+    expect(result.message).toMatchObject({
+      stopReason: "error",
+      errorMessage: "startup failed",
+    });
+    expect(onResponse).toHaveBeenCalledOnce();
+    expect(onResponse.mock.calls[0][0].status).toBe(0);
+    expect(onResponse.mock.calls[0][0].headers).not.toHaveProperty(
+      "x-pi-claude-session-id",
+    );
+    expect(
+      result.events.filter((event) => event.type === "error"),
+    ).toHaveLength(1);
+  });
+  it("doesn't report a cached session ID before a replacement session initializes", async () => {
+    const onResponse = vi.fn();
+    const observe = vi.fn((event: ClaudeDriverEvent) => {
+      if (event.type === "observation")
+        expect(onResponse).not.toHaveBeenCalled();
+    });
+    const result = await collect(
+      projectRound(
+        model,
+        request,
+        { onResponse },
+        runtime([
+          driver({
+            type: "observation",
+            family: "diagnostic",
+            subtype: "startup",
+            data: {},
+          }),
+          driver({
+            type: "initialized",
+            claudeSessionId: "replacement-id",
+            model: "claude",
+            runtimeVersion: "2",
+            capabilities: [],
+            tools: [],
+            mcpServers: [],
+          }),
+          {
+            type: "round_end",
+            roundId: "round",
+            reason: "stop",
+            content: [],
+            pendingToolCallIds: [],
+          },
+        ]),
+        { driver: "cli", claudeSessionId: "cached-old-id", observe },
+      ),
+    );
+    expect(result.message.stopReason).toBe("stop");
+    expect(onResponse).toHaveBeenCalledOnce();
+    expect(onResponse.mock.calls[0][0].headers["x-pi-claude-session-id"]).toBe(
+      "replacement-id",
+    );
+  });
+  it("settles abort during the deferred authoritative response hook once", async () => {
+    const controller = new AbortController();
+    const onResponse = vi.fn(() => {
+      controller.abort();
+      return new Promise<void>(() => {});
+    });
+    const backend = runtime([
+      driver({
+        type: "observation",
+        family: "diagnostic",
+        subtype: "startup",
+        data: {},
+      }),
+      driver({
+        type: "initialized",
+        claudeSessionId: "authoritative-id",
+        model: "claude",
+        runtimeVersion: "2",
+        capabilities: [],
+        tools: [],
+        mcpServers: [],
+      }),
+    ]);
+    const result = await collect(
+      projectRound(
+        model,
+        { ...request, signal: controller.signal },
+        { onResponse },
+        backend,
+        { driver: "cli" },
+      ),
+    );
+    expect(onResponse).toHaveBeenCalledOnce();
+    expect(result.message.stopReason).toBe("aborted");
+    expect(
+      result.events.filter((event) => event.type === "error"),
+    ).toHaveLength(1);
+    expect(backend.invalidate).toHaveBeenCalledWith(request.session, "abort");
+  });
   it("uses real native streams and emits text/signatures once across deltas and indexed snapshots", async () => {
     const events = [
       driver({

@@ -158,6 +158,13 @@ export class ControlChannel {
       if (
         this.session.tools.some((tool) => `mcp__host__${tool.name}` === name)
       ) {
+        this.emit({
+          type: "observation",
+          family: "diagnostic",
+          subtype: "host-mcp-permission",
+          data: { requestId: id, toolName: name },
+          attribution: { toolUseId: request.tool_use_id },
+        });
         void this.reply(id, {
           behavior: "allow",
           updatedInput: request.input as JsonObject,

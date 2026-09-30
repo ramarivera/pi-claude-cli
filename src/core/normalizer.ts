@@ -203,6 +203,36 @@ export function createClaudeEventNormalizer(
     data: diagnostic(data) as JsonObject,
     attribution: a,
   });
+  const boundary = (
+    subtype: string,
+    ctx: string,
+    message: MessageState,
+    previousActiveId: string | undefined,
+    a: EventAttribution,
+    extra: JsonObject = {},
+  ): Event =>
+    observe(
+      "diagnostic",
+      subtype,
+      {
+        messageId: (a.messageId ?? message.id).slice(0, 128),
+        previousActiveMessageId: previousActiveId?.slice(0, 128) ?? null,
+        activeMessageId: active.get(ctx)?.slice(0, 128) ?? null,
+        ended: message.ended,
+        stopReasonPresent: Boolean(message.stopReason),
+        blockCount: message.blocks.size,
+        blocks: [...message.blocks].slice(0, 32).map(([index, block]) => ({
+          index,
+          type: block.content?.type ?? "unsupported",
+          ended: block.ended,
+          ...(block.content?.type === "tool_call"
+            ? { toolCallId: block.content.id.slice(0, 128) }
+            : {}),
+        })),
+        ...extra,
+      },
+      a,
+    );
   const unknown = (data: RecordValue, a: EventAttribution): Event =>
     observe(
       "diagnostic",
@@ -389,6 +419,7 @@ export function createClaudeEventNormalizer(
           const prior = messages.get(`${ctx}:${id}`);
           if (prior) return [];
           if (terminalContexts.delete(ctx)) generation++;
+          const previousActiveId = active.get(ctx);
           active.set(ctx, id);
           const messageState = state(`${ctx}:${id}`, string(message?.model));
           messageState.usage = usage(message?.usage);
@@ -399,6 +430,16 @@ export function createClaudeEventNormalizer(
               ...(messageState.model ? { model: messageState.model } : {}),
               attribution: { ...a, messageId: id },
             },
+            boundary(
+              "core-message-start",
+              ctx,
+              messageState,
+              previousActiveId,
+              {
+                ...a,
+                messageId: id,
+              },
+            ),
           ];
         }
         const id = string(event.message_id) ?? active.get(ctx);
@@ -519,6 +560,9 @@ export function createClaudeEventNormalizer(
             ...(message.usage ? { usage: message.usage } : {}),
             attribution: attr,
           });
+          events.push(
+            boundary("core-message-stop", ctx, message, active.get(ctx), attr),
+          );
         } else if (event.type !== "ping") events.push(unknown(event, attr));
         return events;
       }
@@ -537,7 +581,10 @@ export function createClaudeEventNormalizer(
           snapshotKey = `${ctx}:${snapshotId}`;
         if (snapshotId && snapshots.has(snapshotKey)) return [];
         if (snapshotId) snapshots.add(snapshotKey);
-        active.set(ctx, id);
+        // A late canonical snapshot can reconcile a known older message while a
+        // newer message is streaming. Don't redirect its unlabelled deltas.
+        const activeId = active.get(ctx);
+        if (!existing || !activeId || activeId === id) active.set(ctx, id);
         const message = state(key, string(raw.model)),
           attr = { ...a, messageId: id };
         const parsed: AssistantContent[] = [],
@@ -620,6 +667,14 @@ export function createClaudeEventNormalizer(
             },
             attribution: attr,
           });
+        events.push(
+          boundary("core-assistant-snapshot", ctx, message, activeId, attr, {
+            ...(snapshotId ? { snapshotId: snapshotId.slice(0, 128) } : {}),
+            snapshotKnownMessage: Boolean(existing),
+            snapshotFull: full,
+            snapshotStopReasonPresent: Boolean(stopReason),
+          }),
+        );
         return events;
       }
       if (data.type === "result") {

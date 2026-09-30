@@ -17,9 +17,16 @@ replacement can change model input or restrict the effective tool inventory;
 credentials, session ownership, settings and cancellation remain owned by the
 adapter. Invalid replacement shapes fail the round.
 
-`onResponse` runs once per round on the first actual driver event, with status
-`0`, the selected driver/transport and authoritative Claude session ID when
-known. There is no HTTP response status for either runtime transport.
+`onResponse` runs once per round when initialization or the current driver's
+attribution provides an authoritative Claude session ID, with status `0` and
+the selected driver/transport. Pre-initialization diagnostics still reach the
+stream-event hook in order. Child frames remain observable but don't update the
+parent's identity or consume its response callback. If parent transport events
+arrive but initialization fails,
+the terminal error triggers an ID-free response with
+`x-pi-claude-initialization: unobserved`. Failures before any driver event don't
+claim a response. A prior round's cached ID isn't used for new startup diagnostics.
+There is no HTTP response status for either runtime transport.
 `onProviderStreamEvent` receives cloned normalized driver DTOs before host event
 projection. Callback failures terminate with a Pi AssistantMessage error. Abort
 and idle timeout settle even while a callback or runtime factory hasn't resolved;

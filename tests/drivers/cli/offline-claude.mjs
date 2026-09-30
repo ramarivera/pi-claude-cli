@@ -97,6 +97,73 @@ if (args.includes("--version")) {
       await writeFile(process.env.PCC_TREE, String(grandchild.pid));
       if (action === "exit-tree") process.exit(0);
       complete();
+    } else if (action === "native-sequence") {
+      const endpoint = config.mcpServers.host;
+      transport = new StdioClientTransport({
+        command: endpoint.command,
+        args: endpoint.args,
+        env: { ...process.env, ...endpoint.env },
+        stderr: "pipe",
+      });
+      client = new Client({
+        name: "offline-sequential-claude",
+        version: "1.0.0",
+      });
+      await client.connect(transport);
+      send({
+        type: "fixture",
+        subtype: "tools",
+        data: await client.listTools(),
+      });
+      for (const call of [
+        {
+          id: "toolu_019MQnr1hrXbz88TbmDn9End",
+          name: "read",
+          arguments: {
+            path: "fixture.txt",
+            i: "read fixture.txt to get snapshot tag",
+          },
+        },
+        {
+          id: "toolu_01Qb5GdCWMM4CvQefY4YJrGw",
+          name: "edit",
+          arguments: {
+            input: "[fixture.txt#F27C]\nPUT 1.=1:\n+replacement",
+            i: "replace line 1 with replacement using hashline syntax",
+          },
+        },
+      ]) {
+        if (call.name === "edit")
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        send({
+          type: "fixture",
+          subtype: "before-native-call",
+          id: call.id,
+          name: call.name,
+          serverPid: transport.pid,
+        });
+        const permission = await ask(`permission-${call.id}`, {
+          subtype: "can_use_tool",
+          tool_name: `mcp__host__${call.name}`,
+          tool_use_id: call.id,
+          input: call.arguments,
+        });
+        if (permission.response?.behavior !== "allow")
+          throw new Error("Native host MCP permission was denied");
+        const result = await client.callTool({
+          name: call.name,
+          arguments: permission.response.updatedInput,
+          _meta: { "claudecode/toolUseId": call.id },
+        });
+        send({
+          type: "fixture",
+          subtype: "tool-result",
+          id: call.id,
+          name: call.name,
+          result,
+        });
+      }
+      complete();
     } else if (action.startsWith("tools")) {
       const endpoint = config.mcpServers.host;
       transport = new StdioClientTransport({

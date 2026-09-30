@@ -73,6 +73,127 @@ function collectContent(
 }
 
 describe("shared Claude normalizer (offline)", () => {
+  it("traces message boundaries using only IDs, block metadata and completion flags", () => {
+    const n = make();
+    const start = n.normalize(
+      stream({
+        type: "message_start",
+        message: { id: "m", content: "private prompt" },
+      }),
+    );
+    expect(start.map((event) => event.type)).toEqual([
+      "message_start",
+      "observation",
+    ]);
+    expect(start[1]).toMatchObject({
+      family: "diagnostic",
+      subtype: "core-message-start",
+      data: {
+        messageId: "m",
+        previousActiveMessageId: null,
+        activeMessageId: "m",
+        ended: false,
+        blocks: [],
+      },
+    });
+    const raw = snapshot("m", "s", [
+      { type: "text", text: "private assistant text" },
+      {
+        type: "tool_use",
+        id: "a",
+        name: "mcp__host__read",
+        input: { path: "private path", token: "private credential" },
+      },
+    ]);
+    const full = n.normalize(raw);
+    const trace = full.find(
+      (event) =>
+        event.type === "observation" &&
+        event.subtype === "core-assistant-snapshot",
+    );
+    expect(trace).toMatchObject({
+      data: {
+        messageId: "m",
+        previousActiveMessageId: "m",
+        activeMessageId: "m",
+        ended: false,
+        stopReasonPresent: false,
+        blockCount: 2,
+        blocks: [
+          { index: 0, type: "text", ended: true },
+          { index: 1, type: "tool_call", ended: true, toolCallId: "a" },
+        ],
+        snapshotId: "s",
+        snapshotKnownMessage: true,
+        snapshotFull: true,
+        snapshotStopReasonPresent: false,
+      },
+    });
+    expect(JSON.stringify(trace)).not.toContain("private");
+    expect(n.normalize(stream({ type: "message_stop" }))).toMatchObject([
+      { type: "message_end", messageId: "m" },
+      {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "core-message-stop",
+        data: { messageId: "m", ended: true, blockCount: 2 },
+      },
+    ]);
+    n.normalize(stream({ type: "message_start", message: { id: "new" } }));
+    const late = n.normalize({ ...raw, uuid: "late" });
+    expect(late.at(-1)).toMatchObject({
+      data: {
+        messageId: "m",
+        previousActiveMessageId: "new",
+        activeMessageId: "new",
+        ended: true,
+        snapshotKnownMessage: true,
+      },
+    });
+  });
+
+  it.each([true, false])(
+    "keeps a newer streamed message active when an earlier message receives a late snapshot (ended=%s)",
+    (ended) => {
+      const n = make();
+      n.normalize(
+        stream({ type: "message_start", message: { id: "previous" } }),
+      );
+      if (ended) n.normalize(stream({ type: "message_stop" }));
+      n.normalize(
+        stream({ type: "message_start", message: { id: "current" } }),
+      );
+      n.normalize(
+        stream({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        }),
+      );
+      n.normalize(
+        snapshot("previous", "late", [{ type: "text", text: "old" }]),
+      );
+      expect(
+        n.normalize(
+          stream({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "current text" },
+          }),
+        ),
+      ).toContainEqual(
+        expect.objectContaining({
+          type: "content_delta",
+          messageId: "current",
+          delta: { kind: "text", text: "current text" },
+        }),
+      );
+      expect(n.normalize(stream({ type: "message_stop" }))).toContainEqual(
+        expect.objectContaining({ type: "message_end", messageId: "current" }),
+      );
+    },
+  );
+
   it("projects authoritative initialization and failed MCP status before results", () => {
     const n = make();
     const events = n.normalize({
@@ -273,6 +394,7 @@ describe("shared Claude normalizer (offline)", () => {
     expect(n.normalize(definitive).map((event) => event.type)).toEqual([
       "assistant_snapshot",
       "message_end",
+      "observation",
     ]);
     expect(n.normalize(definitive)).toEqual([]);
     const streamed = make();
@@ -320,28 +442,38 @@ describe("shared Claude normalizer (offline)", () => {
       ],
       contentIndexes: [0],
     });
-    expect(events.filter((event) => event.type === "observation")).toHaveLength(
-      3,
-    );
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "observation" &&
+          event.subtype === "claude-tool-proposal",
+      ),
+    ).toHaveLength(3);
     expect(events.some((event) => event.type === "host_tool_request")).toBe(
       false,
     );
     expect(
-      n.normalize(
-        snapshot(
-          "child",
-          "c",
-          [
-            {
-              type: "tool_use",
-              id: "child-id",
-              name: "mcp__host__read",
-              input: {},
-            },
-          ],
-          { parent_tool_use_id: "task-parent" },
+      n
+        .normalize(
+          snapshot(
+            "child",
+            "c",
+            [
+              {
+                type: "tool_use",
+                id: "child-id",
+                name: "mcp__host__read",
+                input: {},
+              },
+            ],
+            { parent_tool_use_id: "task-parent" },
+          ),
+        )
+        .filter(
+          (event) =>
+            event.type === "observation" &&
+            event.subtype === "claude-tool-proposal",
         ),
-      ),
     ).toMatchObject([
       {
         type: "observation",
@@ -803,8 +935,15 @@ describe("shared Claude normalizer (offline)", () => {
     expect(n.normalize(raw).map((event) => event.type)).toEqual([
       "assistant_snapshot",
       "message_end",
+      "observation",
     ]);
-    expect(n.normalize(raw)).toEqual([]);
+    expect(n.normalize(raw)).toMatchObject([
+      {
+        type: "observation",
+        subtype: "core-assistant-snapshot",
+        data: { ended: true, snapshotKnownMessage: true },
+      },
+    ]);
     expect(
       n.normalize({
         ...raw,
@@ -825,7 +964,13 @@ describe("shared Claude normalizer (offline)", () => {
         { agent_id: "child-agent", turn_id: "child-turn" },
       ),
     );
-    expect(events).toMatchObject([
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "observation" &&
+          event.subtype === "claude-tool-proposal",
+      ),
+    ).toMatchObject([
       {
         type: "observation",
         data: { owner: "subagent" },

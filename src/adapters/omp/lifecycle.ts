@@ -9,6 +9,7 @@ import type {
   HistoryInvalidationReason,
   HostSessionIdentity,
 } from "../../contracts/index.js";
+import { diagnosticId, projectOmpDiagnostic } from "./diagnostics.js";
 
 export interface OmpSessionState {
   identity: HostSessionIdentity;
@@ -225,6 +226,28 @@ export class OmpLifecycle {
         state.claudeSessionId = event.attribution.claudeSessionId;
     }
     if (event.type !== "observation") return;
+    const diagnostic = projectOmpDiagnostic(event);
+    if (diagnostic) {
+      api.events.emit("pi-claude-cli:diagnostic", {
+        owner: "claude",
+        hostSession: {
+          sessionId: diagnosticId(state.identity.sessionId),
+          branchId: diagnosticId(state.identity.branchId),
+          historyRevision: diagnosticId(state.identity.historyRevision),
+        },
+        hostAgent: {
+          kind:
+            state.context.agent.kind === "main" ||
+            state.context.agent.kind === "sub"
+              ? state.context.agent.kind
+              : undefined,
+          id: diagnosticId(state.context.agent.id),
+          parentId: diagnosticId(state.context.agent.parentId),
+        },
+        event: diagnostic,
+      });
+      return;
+    }
     if (
       ![
         "task",

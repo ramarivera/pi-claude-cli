@@ -33,12 +33,12 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 2. Core lane
 
-- [x] 2.1 Implement neutral event reconciliation and terminal outcomes (`pcc-core-events`; lane `core`; 90 min).
+- [ ] 2.1 Implement neutral event reconciliation and terminal outcomes (`pcc-core-events`; lane `core`; 90 min).
   - Capabilities: `claude-event-contract`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Delta/full assistant dedupe, typed error/result mapping, usage and attributed retry/limit/task/status events pass state regression tests; one terminal outcome per turn; unknown event policy preserves diagnostics.
 
-- [x] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
+- [ ] 2.2 Implement session identity, handoff and lifecycle ownership (`pcc-core-session`; lane `core`; 100 min).
   - Capabilities: `session-lifecycle`, `host-tool-handoff`.
   - Blocked by: `pcc-core-events`.
   - Acceptance: Correlate multiple tool results by ID, invalidate changed driver/cwd/history/schema/branch state, settle channels and isolate concurrent sessions; abort/result/EOF and shutdown/reload races pass; no global cache/state.
@@ -74,7 +74,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Current transcript prompt/tools, cwd host context, correct callbacks and AssistantMessage errors/usage; active exposure policy preserved; provider-ready tools and metadata project without SDK/OMP imports; entrypoint factory defined.
 
-- [x] 5.2 Implement Pi tool and session lifecycle adaptation (`pcc-pi-life`; lane `pi`; 90 min).
+- [ ] 5.2 Implement Pi tool and session lifecycle adaptation (`pcc-pi-life`; lane `pi`; 90 min).
   - Capabilities: `pi-adapter`, `host-tool-handoff`, `session-lifecycle`.
   - Blocked by: `pcc-pi-stream`.
   - Acceptance: Built-in/custom/native schemas and tools results round-trip, session start/shutdown/reload/compact/tree/branch lifecycle, reentrancy and unsupported capabilities checked; no autoactivation of all tools; same adapter works with both contract drivers.

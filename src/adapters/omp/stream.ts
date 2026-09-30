@@ -339,13 +339,25 @@ export function projectRound(
         }
         observation.activity?.();
         const event = item.event;
-        if (!event.attribution.parentToolUseId && !event.attribution.agentId) {
-          if (event.type === "initialized")
-            observation.claudeSessionId = event.claudeSessionId;
-          else if (event.attribution.claudeSessionId)
-            observation.claudeSessionId = event.attribution.claudeSessionId;
-        }
-        if (!responded) {
+        const mainEvent =
+          !event.attribution.parentToolUseId && !event.attribution.agentId;
+        const responseSessionId = mainEvent
+          ? event.type === "initialized"
+            ? event.claudeSessionId
+            : event.attribution.claudeSessionId
+          : undefined;
+        if (responseSessionId) observation.claudeSessionId = responseSessionId;
+        // Startup transport diagnostics can precede initialization. Wait for the
+        // authoritative main session identity, or report an actual startup failure
+        // without fabricating one.
+        if (
+          !responded &&
+          (responseSessionId ||
+            (mainEvent &&
+              (event.type === "initialized" ||
+                event.type === "session_error" ||
+                event.type === "session_closed")))
+        ) {
           responded = true;
           await withSignal(
             Promise.resolve(
@@ -356,9 +368,9 @@ export function projectRound(
                     "x-pi-claude-transport":
                       observation.driver === "cli" ? "stdio" : "sdk",
                     "x-pi-claude-driver": observation.driver,
-                    ...(observation.claudeSessionId
+                    ...(responseSessionId
                       ? {
-                          "x-pi-claude-session-id": observation.claudeSessionId,
+                          "x-pi-claude-session-id": responseSessionId,
                         }
                       : {}),
                   },

@@ -19,6 +19,7 @@ import {
   runtime,
 } from "./support.js";
 import type {
+  ClaudeRoundEvent,
   ClaudeRuntime,
   HostRoundRequest,
 } from "../../../src/contracts/index.js";
@@ -36,6 +37,18 @@ const terminal = {
   pendingToolCallIds: [],
 };
 
+const diagnostic: ClaudeRoundEvent = {
+  type: "driver_event",
+  roundId: "r",
+  event: {
+    type: "observation",
+    family: "diagnostic",
+    subtype: "host-mcp-transport",
+    data: { phase: "socket-closed", sessionClosing: false },
+    sequence: 1,
+    attribution: {},
+  },
+};
 describe("current Pi provider registration", () => {
   it.each(["cli", "sdk"] as const)(
     "routes %s through the injected neutral runtime and preserves host policy",
@@ -94,6 +107,182 @@ describe("current Pi provider registration", () => {
       });
     },
   );
+  it.each(["cli", "sdk"] as const)(
+    "preserves %s pre-init diagnostics and observes the response once with initialized identity",
+    async (kind) => {
+      const native = host();
+      const backend = runtime([diagnostic, initialized(), terminal]);
+      registerPiAdapter(native.pi, {
+        configuration: { ...configuration, driver: kind },
+        runtimeFactory: async () => backend,
+      });
+      await native.emit({ type: "session_start", reason: "startup" });
+      const order: string[] = [];
+      const response = vi.fn((value: ProviderResponse) => {
+        order.push("response");
+        expect(value).toMatchObject({
+          status: 0,
+          headers: { "x-pi-claude-session-id": "claude-real" },
+        });
+      });
+      const observed = vi.fn((event: unknown) => {
+        order.push((event as { type: string }).type);
+      });
+      const events = await collect(
+        native.provider().streamSimple(model, transcript(), {
+          onResponse: response,
+          onProviderStreamEvent: observed,
+        }),
+      );
+      expect(order).toEqual(["observation", "response", "initialized"]);
+      expect(response).toHaveBeenCalledTimes(1);
+      expect(observed.mock.calls.map(([event]) => event)).toEqual([
+        diagnostic.event,
+        expect.objectContaining({ type: "initialized" }),
+      ]);
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+    },
+  );
+  it.each([{ parentToolUseId: "toolu_parent" }, { agentId: "agent-child" }])(
+    "keeps child initialization $parentToolUseId$agentId observable without consuming the parent response",
+    async (attribution) => {
+      const native = host();
+      const child: ClaudeRoundEvent = {
+        type: "driver_event",
+        roundId: "r",
+        event: {
+          type: "initialized",
+          claudeSessionId: "claude-child",
+          model: model.id,
+          runtimeVersion: "2.1",
+          capabilities: [],
+          tools: [],
+          mcpServers: [],
+          sequence: 1,
+          attribution: { ...attribution, claudeSessionId: "claude-child" },
+        },
+      };
+      const backend = runtime([child, initialized(), terminal]);
+      registerPiAdapter(native.pi, {
+        configuration: {
+          ...configuration,
+          settings: { ...configuration.settings, forwardSubagentText: true },
+        },
+        runtimeFactory: async () => backend,
+      });
+      await native.emit({ type: "session_start", reason: "startup" });
+      const order: string[] = [];
+      const response = vi.fn((value: ProviderResponse) => {
+        order.push("response");
+        expect(value.headers["x-pi-claude-session-id"]).toBe("claude-real");
+      });
+      const observed = vi.fn((event: unknown) => {
+        order.push((event as { claudeSessionId: string }).claudeSessionId);
+      });
+      const events = await collect(
+        native.provider().streamSimple(model, transcript(), {
+          onResponse: response,
+          onProviderStreamEvent: observed,
+        }),
+      );
+      expect(order).toEqual(["claude-child", "response", "claude-real"]);
+      expect(response).toHaveBeenCalledTimes(1);
+      expect(observed.mock.calls[0][0]).toEqual(child.event);
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+    },
+  );
+  it("doesn't reuse a cached session ID for diagnostics before a replacement query initializes", async () => {
+    const native = host();
+    let turn = 0;
+    const replacement: ClaudeRoundEvent = {
+      type: "driver_event",
+      roundId: "r",
+      event: {
+        type: "initialized",
+        claudeSessionId: "claude-replacement",
+        model: model.id,
+        runtimeVersion: "2.1",
+        capabilities: [],
+        tools: [],
+        mcpServers: [],
+        sequence: 2,
+        attribution: {},
+      },
+    };
+    const backend: ClaudeRuntime = {
+      ...runtime([]),
+      streamRound: async function* () {
+        yield* turn++ === 0
+          ? [initialized(), terminal]
+          : [diagnostic, replacement, terminal];
+      },
+    };
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: async () => backend,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const response = vi.fn();
+    await collect(
+      native
+        .provider()
+        .streamSimple(model, transcript(), { onResponse: response }),
+    );
+    await collect(
+      native
+        .provider()
+        .streamSimple(model, transcript(), { onResponse: response }),
+    );
+    expect(
+      response.mock.calls.map(
+        ([value]) => value.headers["x-pi-claude-session-id"],
+      ),
+    ).toEqual(["claude-real", "claude-replacement"]);
+  });
+  it("reports a terminal startup failure without fabricating a Claude session ID", async () => {
+    const native = host();
+    const backend = runtime([
+      diagnostic,
+      {
+        ...terminal,
+        reason: "error",
+        content: [],
+        error: { code: "transport", message: "startup failed" },
+      },
+    ]);
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: async () => backend,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const response = vi.fn();
+    const order: string[] = [];
+    const events = await collect(
+      native.provider().streamSimple(model, transcript(), {
+        onProviderStreamEvent: () => {
+          order.push("diagnostic");
+        },
+        onResponse: (value) => {
+          order.push("response");
+          response(value);
+        },
+      }),
+    );
+    expect(order).toEqual(["diagnostic", "response"]);
+    expect(response).toHaveBeenCalledExactlyOnceWith({
+      status: 0,
+      headers: {
+        "x-pi-claude-driver": "cli",
+        "x-pi-claude-transport": "subprocess",
+        "x-pi-claude-cost": "reported-estimate-usd",
+        "x-pi-claude-initialization": "unobserved",
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      error: { errorMessage: "startup failed" },
+    });
+  });
   it("delivers partial output while runtime is still waiting", async () => {
     const native = host();
     let release!: () => void;
