@@ -120,6 +120,25 @@ export function registerPiAdapter(
               )
             );
           let observed = false;
+          let sawDriverEvent = false;
+          const observeResponse = async (claudeId?: string) => {
+            if (observed) return;
+            observed = true;
+            const headers: Record<string, string> = {
+              "x-pi-claude-driver": configuration.driver,
+              "x-pi-claude-transport":
+                configuration.driver === "cli" ? "subprocess" : "agent-sdk",
+              "x-pi-claude-cost": "reported-estimate-usd",
+            };
+            if (claudeId) headers["x-pi-claude-session-id"] = claudeId;
+            else headers["x-pi-claude-initialization"] = "unobserved";
+            await withSignal(
+              Promise.resolve(
+                streamOptions.onResponse?.({ status: 0, headers }, model),
+              ),
+              request.signal,
+            );
+          };
           for await (const event of ownedRuntime.streamRound(request)) {
             if (timeoutError) throw timeoutError;
             if (
@@ -133,28 +152,21 @@ export function registerPiAdapter(
                 "Pi provider round was invalidated while streaming",
               );
             if (event.type === "driver_event") {
+              const mainEvent = !(
+                event.event.attribution.parentToolUseId ||
+                event.event.attribution.agentId
+              );
+              sawDriverEvent ||= mainEvent;
               watchdog.touch();
-              if (event.event.type === "initialized")
+              if (mainEvent && event.event.type === "initialized")
                 state.claudeSessionId = event.event.claudeSessionId;
-              if (!observed) {
-                observed = true;
-                const headers: Record<string, string> = {
-                  "x-pi-claude-driver": configuration.driver,
-                  "x-pi-claude-transport":
-                    configuration.driver === "cli" ? "subprocess" : "agent-sdk",
-                  "x-pi-claude-cost": "reported-estimate-usd",
-                };
-                const claudeId =
-                  state.claudeSessionId ??
-                  event.event.attribution.claudeSessionId;
-                if (claudeId) headers["x-pi-claude-session-id"] = claudeId;
-                await withSignal(
-                  Promise.resolve(
-                    streamOptions.onResponse?.({ status: 0, headers }, model),
-                  ),
-                  request.signal,
-                );
-              }
+              // A prior host round may have a different resident query after core reconciliation.
+              // Use identity observed on this event, never a stale cache for pre-init diagnostics.
+              const claudeId =
+                event.event.type === "initialized"
+                  ? event.event.claudeSessionId
+                  : event.event.attribution.claudeSessionId;
+              if (mainEvent && claudeId) await observeResponse(claudeId);
               await withSignal(
                 Promise.resolve(
                   streamOptions.onProviderStreamEvent?.(
@@ -166,6 +178,8 @@ export function registerPiAdapter(
               );
             }
             if (event.type === "round_end") {
+              if (event.reason === "error" && sawDriverEvent && !observed)
+                await observeResponse();
               watchdog.stop();
               state.parked = event.reason === "toolUse";
               if (!state.parked) lifecycle.detach(state);
