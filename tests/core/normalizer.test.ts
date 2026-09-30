@@ -263,6 +263,30 @@ describe("shared Claude normalizer (offline)", () => {
     expect(n.normalize(stream({ type: "message_stop" }))).toEqual([]);
   });
 
+  it("emits one definitive full-snapshot boundary and doesn't repeat partial message_stop", () => {
+    const n = make();
+    const full = snapshot("m", "a", [{ type: "text", text: "done" }]);
+    const definitive = {
+      ...full,
+      message: { ...full.message, stop_reason: "end_turn" },
+    };
+    expect(n.normalize(definitive).map((event) => event.type)).toEqual([
+      "assistant_snapshot",
+      "message_end",
+    ]);
+    expect(n.normalize(definitive)).toEqual([]);
+    const streamed = make();
+    streamed.normalize(stream({ type: "message_start", message: { id: "m" } }));
+    expect(
+      streamed.normalize(stream({ type: "message_stop" }))[0],
+    ).toMatchObject({ type: "message_end" });
+    expect(
+      streamed
+        .normalize(definitive)
+        .filter((event) => event.type === "message_end"),
+    ).toEqual([]);
+  });
+
   it("projects only owned namespace calls and never fabricates an MCP park", () => {
     const n = make();
     const events = n.normalize(
