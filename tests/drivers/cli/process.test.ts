@@ -188,6 +188,26 @@ const result = (id: string, text = id): HostToolResult => ({
 });
 
 describe("CLI resident process (offline child double)", () => {
+  it("rejects immediate steering without consuming a normal next prompt", async () => {
+    const { session, iterator } = await open();
+    await expect(
+      session.submitPrompt({
+        turnId: "steer",
+        priority: "now",
+        content: [{ type: "text", text: "immediate steering" }],
+      }),
+    ).rejects.toThrow("CLI steering priorities unsupported");
+    await session.submitPrompt({
+      turnId: "normal",
+      priority: "next",
+      content: [{ type: "text", text: "normal continuation" }],
+    });
+    const terminal = await until(
+      iterator,
+      (event) => event.type === "turn_end",
+    );
+    expect(terminal).toMatchObject({ type: "turn_end", status: "success" });
+  });
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     "rejects invalid output-token limit %s before executable preflight",
     async (limit) => {

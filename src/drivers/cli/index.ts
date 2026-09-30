@@ -700,7 +700,7 @@ class CliSession implements ClaudeDriverSession {
     });
   }
   async submitPrompt(prompt: DriverPrompt): Promise<void> {
-    if (prompt.priority && prompt.priority !== "now")
+    if (prompt.priority && prompt.priority !== "next")
       throw new Error("CLI steering priorities unsupported");
     if (this.active) throw new Error("CLI session already has an active turn");
     this.turnId = prompt.turnId;
