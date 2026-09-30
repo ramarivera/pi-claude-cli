@@ -35,6 +35,7 @@ class OfflineSession implements ClaudeDriverSession {
   private frames: ClaudeDriverEvent[] = [];
   private notify?: () => void;
   private ended = false;
+  private streamError?: unknown;
   readonly normalizer = createClaudeEventNormalizer({
     tools: [
       {
@@ -52,6 +53,7 @@ class OfflineSession implements ClaudeDriverSession {
   };
   private async *iterate(): AsyncGenerator<ClaudeDriverEvent> {
     while (this.frames.length || !this.ended) {
+      if (this.streamError) throw this.streamError;
       if (this.frames.length) yield this.frames.shift() as ClaudeDriverEvent;
       else
         await new Promise<void>((resolve) => {
@@ -66,6 +68,11 @@ class OfflineSession implements ClaudeDriverSession {
   }
   raw(payload: unknown): void {
     for (const event of this.normalizer.normalize(payload)) this.emit(event);
+  }
+  fail(cause: unknown): void {
+    this.streamError = cause;
+    this.notify?.();
+    this.notify = undefined;
   }
   end(): void {
     this.ended = true;
@@ -1468,6 +1475,748 @@ describe("Claude runtime session ownership (offline)", () => {
     expect(outcome(await pending).content).toEqual([
       { type: "text", text: "canonical" },
     ]);
+    await runtime.closeAll();
+  });
+  it("builds streamed text, signed thinking and tool arguments without snapshot dependence", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.emit({ type: "message_start", messageId: "m", attribution: {} });
+    session.emit({
+      type: "content_start",
+      messageId: "m",
+      index: 0,
+      content: { type: "text", text: "prefix" },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_delta",
+      messageId: "m",
+      index: 0,
+      delta: { kind: "text", text: " suffix" },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_start",
+      messageId: "m",
+      index: 1,
+      content: { type: "thinking", thinking: "" },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_delta",
+      messageId: "m",
+      index: 1,
+      delta: { kind: "thinking", thinking: "reason" },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_delta",
+      messageId: "m",
+      index: 1,
+      delta: { kind: "signature", signature: "sig" },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_start",
+      messageId: "m",
+      index: 2,
+      content: { ...call("a"), arguments: {} },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_delta",
+      messageId: "m",
+      index: 2,
+      delta: { kind: "tool-input", partialJson: '{"path":' },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_delta",
+      messageId: "m",
+      index: 2,
+      delta: { kind: "tool-input", partialJson: '"a"}' },
+      attribution: {},
+    });
+    session.emit({
+      type: "content_end",
+      messageId: "m",
+      index: 2,
+      attribution: {},
+    });
+    session.emit({
+      type: "message_end",
+      messageId: "m",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 1,
+      },
+      attribution: {},
+    });
+    session.park(call("a"));
+    const end = outcome(await pending);
+    expect(end.content).toEqual([
+      { type: "text", text: "prefix suffix" },
+      { type: "thinking", thinking: "reason", signature: "sig" },
+      call("a"),
+    ]);
+    expect(end.usage?.reasoningTokens).toBe(1);
+    await runtime.closeAll();
+  });
+
+  it.each(['{"path":', "[]", "null"])(
+    "rejects malformed streamed tool input %s before host execution",
+    async (partialJson) => {
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      const pending = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      session.emit({
+        type: "content_start",
+        messageId: "m",
+        index: 0,
+        content: { ...call("a"), arguments: {} },
+        attribution: {},
+      });
+      session.emit({
+        type: "content_delta",
+        messageId: "m",
+        index: 0,
+        delta: { kind: "tool-input", partialJson },
+        attribution: {},
+      });
+      session.emit({
+        type: "content_end",
+        messageId: "m",
+        index: 0,
+        attribution: {},
+      });
+      expect(outcome(await pending).error?.code).toBe("protocol");
+      expect(session.results).toEqual([]);
+      await runtime.closeAll();
+    },
+  );
+
+  it("rejects a delta without an established block instead of inventing content", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.emit({
+      type: "content_delta",
+      messageId: "m",
+      index: 0,
+      delta: { kind: "text", text: "orphan" },
+      attribution: {},
+    });
+    expect(outcome(await pending).error?.code).toBe("protocol");
+    await runtime.closeAll();
+  });
+
+  it.each(["inactive", "missing-id", "conflicting-name", "conflicting-park"])(
+    "fails a %s host proposal with no repeated execution",
+    async (variant) => {
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      const configured = request();
+      configured.tools = [
+        ...configured.tools,
+        { ...configured.tools[0], name: "edit" },
+      ];
+      const pending = collect(runtime.streamRound(configured));
+      const session = await started(driver);
+      session.emit({ type: "message_start", messageId: "m", attribution: {} });
+      if (variant === "inactive" || variant === "missing-id")
+        session.park(
+          variant === "inactive"
+            ? { ...call("a"), name: "inactive" }
+            : call(""),
+        );
+      else {
+        session.emit({
+          type: "content_start",
+          messageId: "m",
+          index: 0,
+          content: call("a"),
+          attribution: {},
+        });
+        if (variant === "conflicting-name")
+          session.emit({
+            type: "assistant_snapshot",
+            messageId: "m",
+            content: [{ ...call("a"), name: "edit" }],
+            attribution: {},
+          });
+        else {
+          session.park(call("a"));
+          session.park({ ...call("a"), arguments: { path: "changed" } });
+        }
+      }
+      expect(outcome(await pending).error?.code).toBe("tool-correlation");
+      expect(session.results).toEqual([]);
+      await runtime.closeAll();
+    },
+  );
+
+  it("treats a repeated identical park as one host call", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.emit({
+      type: "assistant_snapshot",
+      messageId: "m",
+      content: [call("a")],
+      attribution: {},
+    });
+    session.park(call("a"));
+    session.park(call("a"));
+    session.emit({ type: "message_end", messageId: "m", attribution: {} });
+    const events = await pending;
+    expect(outcome(events).pendingToolCallIds).toEqual(["a"]);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "driver_event" &&
+          event.event.type === "host_tool_request",
+      ),
+    ).toHaveLength(1);
+    await runtime.closeAll();
+  });
+
+  it.each(["active", "detached"])(
+    "rejects turn completion with unresolved host calls while %s",
+    async (variant) => {
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      const pending = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      session.emit({
+        type: "assistant_snapshot",
+        messageId: "m",
+        content: [call("a")],
+        attribution: {},
+      });
+      if (variant === "active") {
+        success(session);
+        expect(outcome(await pending).error?.code).toBe("tool-correlation");
+      } else {
+        session.emit({ type: "message_end", messageId: "m", attribution: {} });
+        session.park(call("a"));
+        const one = outcome(await pending);
+        success(session);
+        await vi.waitFor(() => expect(session.closeCount).toBe(1));
+        const a = toolResult("a");
+        const next = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "r2",
+                transcript: [user, assistant(one.content, "toolUse")],
+                input: { kind: "tool-results", results: [a] },
+              }),
+            ),
+          ),
+        );
+        expect(next.error?.code).toBe("tool-correlation");
+        expect(driver.opened).toHaveLength(1);
+      }
+      await runtime.closeAll();
+    },
+  );
+
+  it("fails callback rejection explicitly and sanitizes transport diagnostics", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    driver.setup = (session) => {
+      session.answerInteraction = async () => {
+        throw new Error("token=private-token callback failed");
+      };
+    };
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.emit({
+      type: "interaction_request",
+      request: {
+        kind: "permission",
+        requestId: "permission",
+        toolUseId: "a",
+        toolName: "mcp__host__read",
+        input: {},
+      },
+      attribution: {},
+    });
+    const end = outcome(await pending);
+    expect(end.error).toMatchObject({
+      code: "runtime",
+      message: "token=[redacted] callback failed",
+    });
+    await runtime.closeAll();
+  });
+
+  it("surfaces event iterator rejection as a transport error", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.fail(new Error("stream failure"));
+    expect(outcome(await pending).error).toMatchObject({
+      code: "transport",
+      message: "stream failure",
+    });
+    await runtime.closeAll();
+  });
+
+  it.each(["error", "aborted"] as const)(
+    "honors an explicit %s turn terminal",
+    async (status) => {
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      const pending = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      session.emit({
+        type: "turn_end",
+        status,
+        subtype: status,
+        isError: true,
+        error: {
+          code: status === "aborted" ? "aborted" : "runtime",
+          message: "failed",
+        },
+        attribution: {},
+      });
+      expect(outcome(await pending).reason).toBe(status);
+      await runtime.closeAll();
+      expect(session.closeCount).toBe(1);
+    },
+  );
+
+  it.each(["session_error", "session_closed", "reset"])(
+    "settles a round when %s arrives",
+    async (type) => {
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      const pending = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      if (type === "session_error")
+        session.emit({
+          type,
+          error: { code: "auth", message: "Login required" },
+          attribution: {},
+        });
+      else if (type === "session_closed")
+        session.emit({ type, reason: "aborted", attribution: {} });
+      else
+        session.emit({
+          type: "observation",
+          family: "reset",
+          subtype: "conversation_reset",
+          data: {},
+          attribution: {},
+        });
+      const end = outcome(await pending);
+      expect(end.error?.code).toBe(
+        type === "session_error"
+          ? "auth"
+          : type === "session_closed"
+            ? "aborted"
+            : "history",
+      );
+      await runtime.closeAll();
+    },
+  );
+
+  it("forwards attributed child observations and optionally text without changing parent content", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(
+      runtime.streamRound(
+        request({
+          settings: { ...request().settings, forwardSubagentText: true },
+        }),
+      ),
+    );
+    const session = await started(driver);
+    session.emit({
+      type: "assistant_snapshot",
+      messageId: "child",
+      content: [{ type: "text", text: "child" }],
+      attribution: { agentId: "agent" },
+    });
+    session.emit({
+      type: "observation",
+      family: "task",
+      subtype: "task_progress",
+      data: { status: "running" },
+      attribution: { parentToolUseId: "parent" },
+    });
+    step(session, "main", [{ type: "text", text: "parent" }]);
+    success(session);
+    const events = await pending;
+    expect(outcome(events).content).toEqual([{ type: "text", text: "parent" }]);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "driver_event" &&
+          (event.event.attribution.agentId ||
+            event.event.attribution.parentToolUseId),
+      ),
+    ).toHaveLength(2);
+    await runtime.closeAll();
+  });
+
+  it("rejects a retraction of a real parked call before the host has executed it", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.emit({
+      type: "assistant_snapshot",
+      messageId: "m",
+      snapshotId: "old",
+      content: [call("a")],
+      contentIndexes: [0],
+      attribution: {},
+    });
+    session.park(call("a"));
+    session.emit({
+      type: "assistant_snapshot",
+      messageId: "replacement",
+      snapshotId: "new",
+      content: [{ type: "text", text: "replacement" }],
+      supersedes: ["old"],
+      attribution: {},
+    });
+    expect(outcome(await pending).error?.code).toBe("tool-correlation");
+    expect(session.cancellations[0]?.isError).toBe(true);
+    await runtime.closeAll();
+  });
+
+  it("removes a superseded unparked proposal and keeps the replacement content", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    session.emit({
+      type: "assistant_snapshot",
+      messageId: "old",
+      snapshotId: "old-frame",
+      content: [call("a")],
+      contentIndexes: [0],
+      attribution: {},
+    });
+    session.emit({
+      type: "assistant_snapshot",
+      messageId: "new",
+      snapshotId: "new-frame",
+      content: [{ type: "text", text: "replacement" }],
+      supersedes: ["old-frame"],
+      attribution: {},
+    });
+    session.emit({ type: "message_end", messageId: "new", attribution: {} });
+    success(session);
+    const end = outcome(await pending);
+    expect(end.reason).toBe("stop");
+    expect(end.content).toEqual([{ type: "text", text: "replacement" }]);
+    await runtime.closeAll();
+  });
+
+  it("waits for opening ownership during close without allowing a prompt after shutdown", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = driver.openSession.bind(driver);
+    driver.openSession = async (req) => {
+      await gate;
+      return original(req);
+    };
+    const pending = collect(runtime.streamRound(request()));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const closing = runtime.closeAll();
+    release();
+    const end = outcome(await pending);
+    await closing;
+    expect(driver.sessions[0].closeCount).toBe(1);
+    expect(driver.sessions[0].prompts).toHaveLength(0);
+    expect(end.error?.code).toBe("closed");
+  });
+
+  it("exposes close failures while still settling the host subscription once", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    driver.setup = (session) => {
+      session.close = async () => {
+        session.closeCount++;
+        session.end();
+        throw new Error("cleanup failed");
+      };
+    };
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    await expect(runtime.close("host")).rejects.toThrow("cleanup failed");
+    expect(outcome(await pending).reason).toBe("aborted");
+    expect(session.closeCount).toBe(1);
+    await expect(runtime.closeAll()).rejects.toThrow("cleanup failed");
+  });
+
+  it("serializes replacement acquisition while the previous resident query is closing", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    driver.setup = (session) => {
+      session.onPrompt = () => {
+        step(session, "m", [{ type: "text", text: "done" }]);
+        success(session);
+      };
+    };
+    const one = outcome(await collect(runtime.streamRound(request())));
+    const old = driver.sessions[0];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = old.close.bind(old);
+    old.close = async () => {
+      await gate;
+      return close();
+    };
+    const next = request({
+      roundId: "r2",
+      cwd: "/changed",
+      transcript: [user, assistant(one.content)],
+    });
+    const a = collect(runtime.streamRound(next));
+    const b = collect(runtime.streamRound({ ...next, roundId: "r3" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    const ends = (await Promise.all([a, b])).map(outcome);
+    expect(driver.opened).toHaveLength(2);
+    expect(ends.filter((end) => end.reason === "stop")).toHaveLength(1);
+    expect(ends.filter((end) => end.reason === "error")).toHaveLength(1);
+    await runtime.closeAll();
+  });
+  it("accepts steering before releasing a parked call even when result completion is immediate", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const pending = collect(runtime.streamRound(request()));
+    const session = await started(driver);
+    step(session, "m", [call("a")]);
+    session.park(call("a"));
+    const one = outcome(await pending);
+    const accepted: string[] = [];
+    session.onPrompt = () => accepted.push("steering");
+    session.deliverToolResults = async (results) => {
+      session.results.push(...results);
+      for (const result of results) session.pending.delete(result.toolCallId);
+      accepted.push("results");
+      success(session);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    const steering = [
+      { type: "text" as const, text: "Use the alternate path" },
+    ];
+    const a = toolResult("a");
+    const next = outcome(
+      await collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+              { role: "user", content: steering },
+            ],
+            input: { kind: "tool-results", results: [a], steering },
+          }),
+        ),
+      ),
+    );
+    expect(next.reason).toBe("stop");
+    expect(accepted).toEqual(["steering", "results"]);
+    expect(session.prompts[1]).toMatchObject({
+      priority: "now",
+      content: steering,
+    });
+    await runtime.closeAll();
+  });
+
+  it.each(["close", "invalidate"])(
+    "waits for an in-flight initial acquisition before %s",
+    async (operation) => {
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = driver.openSession.bind(driver);
+      driver.openSession = async (req) => {
+        await gate;
+        return original(req);
+      };
+      const pending = collect(runtime.streamRound(request()));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const closing =
+        operation === "close"
+          ? runtime.close("host")
+          : runtime.invalidate(request().session, "compaction");
+      release();
+      await closing;
+      expect(outcome(await pending).reason).toBe("aborted");
+      expect(driver.sessions[0].closeCount).toBe(1);
+      await runtime.closeAll();
+    },
+  );
+
+  it("declines unsupported subagent forwarding and incompatible drivers before acquiring resources", async () => {
+    const scripted = new OfflineDriver();
+    const driver: ClaudeDriver = {
+      kind: scripted.kind,
+      capabilities: { ...scripted.capabilities, forwardSubagentText: false },
+      openSession: scripted.openSession.bind(scripted),
+    };
+    const runtime = createClaudeRuntime({ driver });
+    expect(
+      outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              settings: { ...request().settings, forwardSubagentText: true },
+            }),
+          ),
+        ),
+      ).error?.code,
+    ).toBe("unsupported");
+    expect(scripted.opened).toEqual([]);
+    Reflect.set(driver.capabilities, "contractVersion", 2);
+    expect(
+      outcome(await collect(runtime.streamRound(request()))).error?.code,
+    ).toBe("unsupported");
+    await runtime.closeAll();
+    expect(
+      outcome(await collect(runtime.streamRound(request()))).error?.code,
+    ).toBe("closed");
+  });
+
+  it("rejects an invalid round timeout and a missing canonical result ID before spawning", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    expect(
+      outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              settings: { ...request().settings, toolResultTimeoutMs: 0 },
+            }),
+          ),
+        ),
+      ).error?.code,
+    ).toBe("protocol");
+    expect(
+      outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              input: { kind: "tool-results", results: [toolResult("")] },
+            }),
+          ),
+        ),
+      ).error?.code,
+    ).toBe("tool-correlation");
+    expect(driver.opened).toEqual([]);
+    await runtime.closeAll();
+  });
+
+  it("replays supplied historical tool results under a fresh identity when no parked native state exists", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    driver.setup = (session) => {
+      session.onPrompt = () => success(session);
+    };
+    const a = toolResult("a");
+    const history = [user, assistant([call("a")], "toolUse")];
+    expect(
+      outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              transcript: history,
+              input: { kind: "tool-results", results: [a] },
+            }),
+          ),
+        ),
+      ).reason,
+    ).toBe("stop");
+    expect(driver.opened[0].resume).toMatchObject({
+      mode: "replay",
+      replayTranscript: [...history, { role: "tool_result", ...a }],
+    });
+    expect(driver.sessions[0].prompts[0].content).toEqual([
+      {
+        type: "text",
+        text: "Continue the conversation using the supplied host tool results.",
+      },
+    ]);
+    expect(driver.sessions[0].results).toEqual([]);
+    await runtime.closeAll();
+  });
+
+  it("fails a rejected prompt write through the host terminal instead of hanging", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    driver.setup = (session) => {
+      session.submitPrompt = async () => {
+        throw new Error("write failed");
+      };
+    };
+    expect(
+      outcome(await collect(runtime.streamRound(request()))).error?.message,
+    ).toBe("write failed");
+    await runtime.closeAll();
+  });
+  it("rejects a concurrent request with different configuration during initial acquisition", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = driver.openSession.bind(driver);
+    driver.openSession = async (req) => {
+      await gate;
+      return original(req);
+    };
+    const first = collect(runtime.streamRound(request()));
+    const competing = outcome(
+      await collect(
+        runtime.streamRound(
+          request({
+            roundId: "conflict",
+            cwd: "/foreign",
+            model: "foreign",
+            auth: { mode: "api-key", apiKey: "offline-other" },
+          }),
+        ),
+      ),
+    );
+    expect(competing.error?.code).toBe("protocol");
+    release();
+    const session = await started(driver);
+    success(session);
+    expect(outcome(await first).reason).toBe("stop");
+    expect(driver.opened).toHaveLength(1);
+    expect(driver.opened[0]).toMatchObject({
+      model: "model",
+      identity: { cwd: "/sandbox" },
+      auth: { mode: "claude-login" },
+    });
     await runtime.closeAll();
   });
 });
