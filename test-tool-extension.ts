@@ -1,11 +1,11 @@
-import { Type } from "@sinclair/typebox";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "weather",
     label: "Weather",
-    description: "Get the current weather for a city",
+    description: "Return a fixed demo weather result for a city",
     parameters: Type.Object({
       city: Type.String({ description: "City name" }),
     }),

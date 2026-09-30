@@ -4,13 +4,11 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -18,9 +16,12 @@ import {
   MODEL,
   ROOT,
   RpcHost,
+  assertSocketCapacity,
   hostArgs,
   hostEnvironment,
   preflight,
+  receiptDirectory,
+  scratchDirectory,
 } from "./rpc.mjs";
 
 if (process.env.PI_CLAUDE_LIVE_E2E === "1" && process.env.PI_CLAUDE_LIVE_CASE)
@@ -242,7 +243,7 @@ for (const name of CASES) {
         "Invalid PI_CLAUDE_LIVE_CASE selection",
       );
       const [hostKind, driver] = name.split("+");
-      const sandbox = mkdtempSync(join(tmpdir(), "pcc-host-e2e-"));
+      const sandbox = scratchDirectory("e-");
       const receipt = {
         schemaVersion: 1,
         provenance: "actual-authenticated-host-rpc",
@@ -259,7 +260,8 @@ for (const name of CASES) {
       let rpc;
       let failure;
       try {
-        mkdirSync(join(sandbox, "temp"));
+        receipt.socketPathBytes = assertSocketCapacity(sandbox);
+        mkdirSync(join(sandbox, "t"));
         writeFileSync(join(sandbox, "fixture.txt"), "before\n");
         const nonce = `nonce-${randomUUID()}`;
         const marker = `SYSTEM-${randomUUID()}`;
@@ -392,6 +394,11 @@ for (const name of CASES) {
           [],
           "Host shutdown leaked Claude children requiring harness fallback",
         );
+        assert.equal(
+          closed.hostRequiredKill,
+          false,
+          "Host required emergency SIGKILL instead of graceful shutdown",
+        );
         rpc = undefined;
         const restoredAt = observations(observationPath).length;
         rpc = new RpcHost(receipt.versions.binary, args, env, sandbox, {
@@ -430,7 +437,7 @@ for (const name of CASES) {
         };
         receipt.phases.inferenceAbort = await abortInference(rpc, hostKind);
         receipt.phases.inferenceAbort.cleanup = await rpc.transportIdle(
-          join(sandbox, "temp"),
+          join(sandbox, "t"),
         );
         receipt.phases.toolAbort = await abortTool(
           rpc,
@@ -438,7 +445,7 @@ for (const name of CASES) {
           observationPath,
         );
         receipt.phases.toolAbort.cleanup = await rpc.transportIdle(
-          join(sandbox, "temp"),
+          join(sandbox, "t"),
         );
         const proof = "No tools. Reply with the exact word AFTER_ABORT.";
         receipt.prompts.push(proof);
@@ -447,7 +454,7 @@ for (const name of CASES) {
         receipt.stats = await rpc.command("get_session_stats");
         await rpc.command("new_session");
         receipt.phases.finalCleanup = await rpc.transportIdle(
-          join(sandbox, "temp"),
+          join(sandbox, "t"),
         );
         assert.equal(
           observations(observationPath).filter(
@@ -484,9 +491,14 @@ for (const name of CASES) {
               [],
               "Claude children required harness fallback cleanup",
             );
+            assert.equal(
+              closed.hostRequiredKill,
+              false,
+              "Host required emergency SIGKILL instead of graceful shutdown",
+            );
           }
-          const privateFiles = existsSync(join(sandbox, "temp"))
-            ? readdirSync(join(sandbox, "temp")).filter((file) =>
+          const privateFiles = existsSync(join(sandbox, "t"))
+            ? readdirSync(join(sandbox, "t")).filter((file) =>
                 file.startsWith("pcc-cli-"),
               )
             : [];
@@ -514,18 +526,19 @@ for (const name of CASES) {
             .map((command) => command.message),
         );
         receipt.observations = observations(observationPath);
-        const directory =
-          process.env.PI_CLAUDE_E2E_RECEIPT_DIR ??
-          join(tmpdir(), "pcc-live-receipts");
-        mkdirSync(directory, { recursive: true, mode: 0o700 });
-        const path = join(
-          directory,
-          `${name.replace("+", "-")}-${Date.now()}.json`,
-        );
-        writeFileSync(path, JSON.stringify(receipt, null, 2) + "\n", {
-          mode: 0o600,
-        });
-        rmSync(sandbox, { recursive: true, force: true });
+        let path;
+        try {
+          const directory = receiptDirectory();
+          path = join(
+            directory,
+            `${name.replace("+", "-")}-${Date.now()}.json`,
+          );
+          writeFileSync(path, JSON.stringify(receipt, null, 2) + "\n", {
+            mode: 0o600,
+          });
+        } finally {
+          rmSync(sandbox, { recursive: true, force: true });
+        }
         console.log(`${name} ${receipt.status}; sanitized receipt: ${path}`);
       }
       if (failure) throw failure;

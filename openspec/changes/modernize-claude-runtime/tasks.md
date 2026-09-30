@@ -103,7 +103,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-fixtures`.
   - Acceptance: Same expected events/outcomes for real driver modules with offline injected transport seams; host contract checks use actual host types; ordering/abort/correlation/error/tool ownership scenarios and replay fixtures; tests cannot merely mirror implementation.
 
-- [ ] 7.3 Build opt-in real Pi and OMP E2E matrix harness (`pcc-e2e-harness`; lane `verification`; 100 min).
+- [x] 7.3 Build opt-in real Pi and OMP E2E matrix harness (`pcc-e2e-harness`; lane `verification`; 100 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-conformance`.
   - Acceptance: Four named real host/driver combinations, semantic output/system prompt/host tool/result/resume/abort/cleanup assertions, one OMP native-format and SDK parked-correlation case; CLI/auth/config prerequisites; bounded turns/time/model; disabled explicit skip, enabled unmet prerequisite failure; isolated resources and sanitized receipts.

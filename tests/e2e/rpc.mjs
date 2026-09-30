@@ -5,6 +5,8 @@ import {
   accessSync,
   constants,
   existsSync,
+  mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -16,6 +18,59 @@ export const MODEL = "claude-haiku-4-5-20251001";
 export const CASES = ["pi+cli", "pi+sdk", "omp+cli", "omp+sdk"];
 export const ROOT = realpathSync(new URL("../..", import.meta.url));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function scratchRoot(env = process.env) {
+  const project = join(homedir(), "dev/agentic-scratchpads/pi-claude-cli");
+  const branch =
+    spawnSync("git", ["branch", "--show-current"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    }).stdout?.trim() || "main";
+  const root = env.PI_CLAUDE_E2E_SCRATCH_DIR
+    ? resolve(env.PI_CLAUDE_E2E_SCRATCH_DIR)
+    : join(
+        project,
+        branch
+          .split("/")
+          .at(-1)
+          .replace(/[^a-zA-Z0-9._-]/g, "_"),
+      );
+  assert.ok(
+    root.startsWith(project + "/"),
+    "PI_CLAUDE_E2E_SCRATCH_DIR must be under the project scratchpads directory",
+  );
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  return root;
+}
+
+export function scratchDirectory(prefix, env = process.env) {
+  return mkdtempSync(join(scratchRoot(env), prefix));
+}
+
+export function receiptDirectory(env = process.env) {
+  const root = scratchRoot(env);
+  const directory = resolve(
+    env.PI_CLAUDE_E2E_RECEIPT_DIR ?? join(root, "receipts"),
+  );
+  assert.ok(
+    directory.startsWith(
+      join(homedir(), "dev/agentic-scratchpads/pi-claude-cli") + "/",
+    ),
+    "Receipts must remain under project scratchpads",
+  );
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  return directory;
+}
+
+export function assertSocketCapacity(sandbox) {
+  const path = join(sandbox, "t", "pcc-cli-XXXXXX", "host.sock");
+  const bytes = Buffer.byteLength(path);
+  assert.ok(
+    bytes <= 107,
+    `Scratch path exceeds Linux Unix socket capacity (${bytes} > 107 bytes): ${path}`,
+  );
+  return bytes;
+}
 
 export function executable(name, env = process.env) {
   const found = name.includes("/")
@@ -71,7 +126,7 @@ export function hostEnvironment(
     PI_CLAUDE_INTERNAL_TOOLS: "[]",
     PCC_E2E_NONCE: nonce,
     PCC_E2E_OBSERVATIONS: join(sandbox, "observations.jsonl"),
-    TMPDIR: join(sandbox, "temp"),
+    TMPDIR: join(sandbox, "t"),
     PI_CODING_AGENT_DIR: join(sandbox, `${host}-agent`),
     PI_CONFIG_DIR: relative(homedir(), join(sandbox, "omp-root")),
     OMP_PROFILE: "",
@@ -412,72 +467,69 @@ export class RpcHost {
     return text;
   }
   async close() {
-    clearInterval(this.monitor);
     this.track();
-    const signal = (sig) => {
-      try {
-        process.kill(-this.child.pid, sig);
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
-    };
-    this.child.stdin.end();
-    for (let n = 0; !this.closed && n < 60; n++) await delay(50);
-    const beforeFallback = processes();
-    const fallbackPids = !this.closed
-      ? [...this.tracked]
+    try {
+      const signal = (pid, sig) => {
+        try {
+          process.kill(pid, sig);
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+      };
+      this.child.stdin.end();
+      for (let n = 0; !this.closed && n < 60; n++) await delay(50);
+      const remaining = () => {
+        const snapshot = processes();
+        return [...this.tracked]
           .filter(
             ([pid, start]) =>
-              pid !== this.child.pid &&
-              beforeFallback.get(pid)?.start === start &&
-              beforeFallback.get(pid)?.state !== "Z",
+              snapshot.get(pid)?.start === start &&
+              snapshot.get(pid)?.state !== "Z",
           )
-          .map(([pid]) => pid)
-      : [];
-    if (!this.closed) signal("SIGTERM");
-    for (let n = 0; !this.closed && n < 60; n++) await delay(50);
-    if (!this.closed) signal("SIGKILL");
-    const remaining = () => {
-      const snapshot = processes();
-      return [...this.tracked]
-        .filter(
-          ([pid, start]) =>
-            snapshot.get(pid)?.start === start &&
-            snapshot.get(pid)?.state !== "Z",
-        )
-        .map(([pid]) => pid);
-    };
-    const forcedChildren = [
-      ...new Set([
-        ...fallbackPids,
-        ...remaining().filter((pid) => pid !== this.child.pid),
-      ]),
-    ];
-    for (const pid of remaining()) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+          .map(([pid]) => pid);
+      };
+      // Supported host SIGTERM must reach only the host. Its adapter owns child
+      // shutdown; signalling the whole group here would hide SDK cleanup leaks.
+      if (!this.closed) signal(this.child.pid, "SIGTERM");
+      for (let n = 0; !this.closed && n < 60; n++) await delay(50);
+      const forcedChildren = new Set();
+      const hostRequiredKill = !this.closed;
+      if (hostRequiredKill) {
+        for (const pid of remaining())
+          if (pid !== this.child.pid) forcedChildren.add(pid);
+        signal(-this.child.pid, "SIGKILL");
       }
-    }
-    for (let n = 0; remaining().length && n < 60; n++) await delay(50);
-    for (const pid of remaining()) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+      for (const pid of remaining()) {
+        if (pid !== this.child.pid) forcedChildren.add(pid);
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
       }
+      for (let n = 0; remaining().length && n < 60; n++) await delay(50);
+      for (const pid of remaining()) {
+        if (pid !== this.child.pid) forcedChildren.add(pid);
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+      }
+      for (let n = 0; remaining().length && n < 20; n++) await delay(50);
+      assert.deepEqual(
+        remaining(),
+        [],
+        "Owned host/Claude children survived cleanup",
+      );
+      return {
+        observedPids: [...this.tracked.keys()],
+        forcedChildren: [...forcedChildren],
+        hostRequiredKill,
+        survivors: [],
+      };
+    } finally {
+      clearInterval(this.monitor);
     }
-    for (let n = 0; remaining().length && n < 20; n++) await delay(50);
-    assert.deepEqual(
-      remaining(),
-      [],
-      "Owned host/Claude children survived cleanup",
-    );
-    return {
-      observedPids: [...this.tracked.keys()],
-      forcedChildren,
-      survivors: [],
-    };
   }
 }

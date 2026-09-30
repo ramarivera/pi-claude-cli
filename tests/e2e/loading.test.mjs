@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
   CASES,
   MODEL,
   RpcHost,
+  assertSocketCapacity,
   executable,
   hostArgs,
   hostEnvironment,
+  scratchDirectory,
 } from "./rpc.mjs";
 
 for (const name of CASES) {
@@ -24,10 +25,11 @@ for (const name of CASES) {
     },
     async () => {
       const [host, driver] = name.split("+");
-      const sandbox = mkdtempSync(join(tmpdir(), "pcc-host-loading-"));
+      const sandbox = scratchDirectory("l-");
       let rpc;
       try {
-        mkdirSync(join(sandbox, "temp"));
+        assertSocketCapacity(sandbox);
+        mkdirSync(join(sandbox, "t"));
         const env = hostEnvironment(
           host,
           driver,
@@ -83,6 +85,7 @@ for (const name of CASES) {
           if (rpc) {
             const cleanup = await rpc.close();
             assert.deepEqual(cleanup.forcedChildren, []);
+            assert.equal(cleanup.hostRequiredKill, false);
           }
         } finally {
           rmSync(sandbox, { recursive: true, force: true });
