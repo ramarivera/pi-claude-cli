@@ -123,6 +123,7 @@ async function open(
       "CLAUDE_CODE_OAUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
       "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+      "CLAUDE_CODE_API_KEY_HELPER",
       "CLAUDE_CODE_USE_BEDROCK",
       "CLAUDE_CODE_USE_VERTEX",
       "CLAUDE_CODE_USE_FOUNDRY",
@@ -276,6 +277,7 @@ describe("CLI resident process (offline child double)", () => {
   });
   it.each([
     ["eof", "transport", "without a terminal result"],
+    ["stdout-eof", "transport", "without a terminal result"],
     ["bad-json", "protocol", "JSON frame"],
     ["oversize", "protocol", "JSON frame"],
     ["nonzero", "runtime", "7"],
@@ -327,11 +329,43 @@ describe("CLI resident process (offline child double)", () => {
     }
     void iterator;
   });
+  it("reaps descendants that inherited stdout after their CLI leader exits", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pcc-exit-tree-"));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const capture = join(directory, "grandchild");
+    const { session, iterator } = await open({ PCC_TREE: capture });
+    await prompt(session, "exit-tree");
+    expect(
+      await until(iterator, (event) => event.type === "session_error"),
+    ).toMatchObject({ error: { code: "transport" } });
+    await session.close();
+    const pid = Number(await readFile(capture, "utf8"));
+    try {
+      expect(await readFile(`/proc/${pid}/stat`, "utf8")).toMatch(/\) Z /);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  });
+  it("reports EPIPE when the live child's stdin closes before an interrupt write", async () => {
+    const { session, iterator } = await open();
+    await prompt(session, "stdin-epipe");
+    await until(
+      iterator,
+      (event) =>
+        event.type === "observation" && event.subtype === "stream_event",
+    );
+    await expect(session.interrupt()).rejects.toThrow(/stdin|closed|write/i);
+    expect(
+      await until(iterator, (event) => event.type === "session_error"),
+    ).toMatchObject({ error: { code: "transport" } });
+    await session.close();
+  });
   it.each([
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_API_KEY_HELPER",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -531,6 +565,9 @@ describe("native MCP endpoint and correlated parked calls (offline MCP client do
         },
       });
     await until(iterator, (event) => event.type === "turn_end");
+    await expect(
+      session.deliverToolResults([result("tool-a", "late success")]),
+    ).rejects.toThrow("Conflicting duplicate");
   });
   it("park deadline releases each handler with an error instead of fabricating success", async () => {
     const input = request();

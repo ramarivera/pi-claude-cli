@@ -85,6 +85,12 @@ server.setRequestHandler(CallToolRequestSchema, (request) => {
     socket.write(packet + "\n", (error) => {
       if (error) fail();
     });
+  }).then((result) => {
+    if (!socket.destroyed)
+      socket.write(JSON.stringify({ type: "settled", id }) + "\n", (error) => {
+        if (error) fail();
+      });
+    return result;
   });
 });
 await server.connect(new StdioServerTransport());

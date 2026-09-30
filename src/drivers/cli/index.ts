@@ -5,6 +5,7 @@ import {
 } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
+import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ import type {
   InteractionResponse,
 } from "../../contracts/index.js";
 import { EventQueue, JsonLines } from "./framing.js";
+import { ControlChannel } from "./controls.js";
 
 const HOST_SERVER = "host";
 const SUPPORTED_VERSION = "2.1.285";
@@ -33,6 +35,7 @@ const AUTH_OVERRIDES = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
   "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+  "CLAUDE_CODE_API_KEY_HELPER",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
@@ -117,7 +120,7 @@ export function createCliDriver(
       structuredToolResults: true,
       images: true,
       steering: "unsupported",
-      interactions: [],
+      interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
       forwardSubagentText: true,
     },
@@ -135,13 +138,23 @@ export function createCliDriver(
         );
       if (
         !(request.settings.toolResultTimeoutMs > 0) ||
-        !Number.isFinite(request.settings.toolResultTimeoutMs)
+        !Number.isFinite(request.settings.toolResultTimeoutMs) ||
+        request.settings.toolResultTimeoutMs > 2147483647
       )
         throw new Error("toolResultTimeoutMs must be positive and finite");
-      if (request.settings.effort)
-        throw new Error(
-          "CLI effort support requires an explicitly supported model (not yet configured)",
-        );
+
+      if (
+        request.settings.maxTurns !== undefined &&
+        (!Number.isSafeInteger(request.settings.maxTurns) ||
+          request.settings.maxTurns <= 0)
+      )
+        throw new Error("maxTurns must be a positive integer");
+      if (
+        request.settings.maxBudgetUsd !== undefined &&
+        (!Number.isFinite(request.settings.maxBudgetUsd) ||
+          request.settings.maxBudgetUsd < 0)
+      )
+        throw new Error("maxBudgetUsd must be finite and nonnegative");
       const names = new Set<string>();
       for (const tool of request.tools) {
         if (tool.inputSchema.type !== "object")
@@ -161,6 +174,14 @@ export function createCliDriver(
       const env = environment(request, options);
       const executable = options.executable ?? "claude";
       const shutdown = options.shutdownTimeoutMs ?? 2000;
+      if (
+        !Number.isFinite(shutdown) ||
+        shutdown < 0 ||
+        shutdown > 2147483647 / 5
+      )
+        throw new Error(
+          "shutdownTimeoutMs must be a bounded nonnegative duration",
+        );
       await preflight(
         executable,
         request.identity.cwd,
@@ -198,6 +219,14 @@ class CliSession implements ClaudeDriverSession {
   private server!: Server;
   private sockets = new Set<Socket>();
   private parked = new Map<string, ParkedCall>();
+  private settlements = new Map<
+    string,
+    {
+      resolve: () => void;
+      timer: ReturnType<typeof setTimeout>;
+      socket: Socket;
+    }
+  >();
   private results = new Map<string, HostToolResult>();
   private closed = false;
   private failed = false;
@@ -206,6 +235,11 @@ class CliSession implements ClaudeDriverSession {
   private closePromise: Promise<void> | undefined;
   private exited!: Promise<void>;
   private stderrBytes = 0;
+  private stderr = "";
+  private stderrDecoder = new StringDecoder("utf8");
+  private diagnosticSecrets: string[] = [];
+  private controls!: ControlChannel;
+  private replayed = false;
   private constructor(
     private readonly request: DriverSessionRequest,
     private readonly options: DriverFactoryOptions,
@@ -241,7 +275,18 @@ class CliSession implements ClaudeDriverSession {
     this.failed = true;
     this.emit({
       type: "session_error",
-      error: { code, message },
+      error: {
+        code,
+        message,
+        ...(this.stderr
+          ? {
+              details: {
+                stderr: this.sanitize(this.stderr),
+                stderrTruncated: this.stderrBytes > 65536,
+              },
+            }
+          : {}),
+      },
       attribution: {},
     });
     void this.close();
@@ -250,6 +295,20 @@ class CliSession implements ClaudeDriverSession {
     executable: string,
     env: NodeJS.ProcessEnv,
   ): Promise<void> {
+    this.diagnosticSecrets = Object.entries(env)
+      .filter(
+        ([key, value]) =>
+          /key|token|secret|password|authorization/i.test(key) &&
+          value &&
+          value.length >= 4,
+      )
+      .map(([, value]) => value!);
+    this.controls = new ControlChannel(
+      this.request,
+      (packet) => this.write(packet, true),
+      (event) => this.emit(event),
+      (message) => this.fail("transport", message),
+    );
     const socketPath = join(this.directory, "host.sock");
     this.server = createServer((socket) => {
       this.sockets.add(socket);
@@ -266,6 +325,12 @@ class CliSession implements ClaudeDriverSession {
       );
       socket.on("close", () => {
         this.sockets.delete(socket);
+        for (const [id, pending] of this.settlements)
+          if (pending.socket === socket) {
+            clearTimeout(pending.timer);
+            pending.resolve();
+            this.settlements.delete(id);
+          }
         for (const [id, call] of this.parked)
           if (call.socket === socket) {
             clearTimeout(call.timer);
@@ -277,6 +342,9 @@ class CliSession implements ClaudeDriverSession {
       this.server.once("error", reject);
       this.server.listen(socketPath, resolve);
     });
+    this.server.on("error", () =>
+      this.fail("transport", "Host MCP IPC listener failed"),
+    );
     await chmod(socketPath, 0o600);
     const toolFile = join(this.directory, "tools.json");
     const promptFile = join(this.directory, "system.txt");
@@ -328,6 +396,8 @@ class CliSession implements ClaudeDriverSession {
       (this.request.settings.settingSources ?? []).join(","),
       "--no-session-persistence",
     ];
+    if (this.request.settings.effort)
+      args.push("--effort", this.request.settings.effort);
     if (this.request.settings.forwardSubagentText)
       args.push("--forward-subagent-text");
     if (this.request.settings.maxTurns !== undefined)
@@ -340,21 +410,7 @@ class CliSession implements ClaudeDriverSession {
       requestedModel: this.request.model,
     });
     const frames = new JsonLines((packet) => {
-      if (record(packet) && packet.type === "control_request") {
-        const id = packet.request_id;
-        if (typeof id !== "string")
-          throw new Error("Control request lacks request ID");
-        void this.write({
-          type: "control_response",
-          response: {
-            subtype: "error",
-            request_id: id,
-            error: "Unsupported CLI control request",
-          },
-        }).catch(() =>
-          this.fail("transport", "Failed to reject unsupported control"),
-        );
-      }
+      if (this.controls.handle(packet)) return;
       for (const event of normalize.normalize(packet)) {
         if (event.type === "turn_end") this.active = false;
         this.emit(event);
@@ -366,13 +422,37 @@ class CliSession implements ClaudeDriverSession {
       stdio: "pipe",
       detached: true,
     });
+    let framesEnded = false;
+    let eofTimer: ReturnType<typeof setTimeout> | undefined;
+    let groupTimer: ReturnType<typeof setTimeout> | undefined;
+    const finishFrames = () => {
+      if (framesEnded) return;
+      framesEnded = true;
+      try {
+        frames.end();
+      } catch {
+        this.fail("protocol", "Invalid trailing Claude JSON frame");
+      }
+    };
+    const killGroup = (signal: NodeJS.Signals) => {
+      if (!this.child.pid) return;
+      try {
+        process.kill(-this.child.pid, signal);
+      } catch {
+        /* already gone */
+      }
+    };
+    this.child.once("exit", () => {
+      if (this.closed) return;
+      killGroup("SIGTERM");
+      groupTimer = setTimeout(() => killGroup("SIGKILL"), this.shutdown);
+    });
     this.exited = new Promise((resolve) => {
       this.child.once("close", (code, signal) => {
-        try {
-          frames.end();
-        } catch {
-          this.fail("protocol", "Invalid trailing Claude JSON frame");
-        }
+        clearTimeout(eofTimer);
+        clearTimeout(groupTimer);
+        this.stderr += this.stderrDecoder.end();
+        finishFrames();
         if (!this.closed) {
           if (code !== 0)
             this.fail(
@@ -393,8 +473,32 @@ class CliSession implements ClaudeDriverSession {
         this.fail("protocol", "Invalid or oversized Claude JSON frame");
       }
     });
+    this.child.stdout.once("end", () => {
+      finishFrames();
+      if (!this.closed)
+        eofTimer = setTimeout(
+          () => {
+            if (this.active)
+              this.fail(
+                "transport",
+                "Claude stdout closed without a terminal result",
+              );
+            else void this.close();
+          },
+          Math.max(25, this.shutdown),
+        );
+    });
+    this.child.stdout.on("error", () =>
+      this.fail("transport", "Claude stdout failed"),
+    );
+    this.child.stderr.on("error", () =>
+      this.fail("transport", "Claude stderr failed"),
+    );
     this.child.stderr.on("data", (chunk: Buffer) => {
-      this.stderrBytes = Math.min(65536, this.stderrBytes + chunk.length);
+      this.stderrBytes += chunk.length;
+      this.stderr = (this.stderr + this.stderrDecoder.write(chunk)).slice(
+        -65536,
+      );
     });
     this.child.stdin.on("error", () =>
       this.fail(
@@ -409,8 +513,68 @@ class CliSession implements ClaudeDriverSession {
       this.child.once("spawn", resolve);
       this.child.once("error", reject);
     });
+    const initialized = await this.controls.request(
+      {
+        subtype: "initialize",
+        hooks: {},
+        supportedDialogKinds: [],
+        forwardSubagentText: this.request.settings.forwardSubagentText ?? false,
+      },
+      Math.max(1000, this.shutdown * 5),
+    );
+    if (this.request.settings.effort) {
+      const models = initialized.models;
+      const model = Array.isArray(models)
+        ? models.find(
+            (row) =>
+              record(row) &&
+              (row.value === this.request.model ||
+                row.resolvedModel === this.request.model),
+          )
+        : undefined;
+      if (
+        !record(model) ||
+        model.supportsEffort !== true ||
+        !Array.isArray(model.supportedEffortLevels) ||
+        !model.supportedEffortLevels.includes(this.request.settings.effort)
+      )
+        throw new Error(
+          `Unsupported effort ${this.request.settings.effort} for exact Claude model ${this.request.model}`,
+        );
+    }
+  }
+  private sanitize(text: string): string {
+    for (const secret of this.diagnosticSecrets)
+      text = text.replaceAll(secret, "[redacted]");
+    return text
+      .replace(/\b(?:sk-ant-|sk-)[A-Za-z0-9_-]+/g, "[redacted]")
+      .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, "$1 [redacted]")
+      .replace(
+        /((?:api[_-]?key|token|password|secret|authorization)\s*[=:]\s*)[^\s,;]+/gi,
+        "$1[redacted]",
+      )
+      .split("")
+      .filter((character) => {
+        const code = character.charCodeAt(0);
+        return code === 9 || code === 10 || (code >= 32 && code !== 127);
+      })
+      .join("")
+      .slice(-4096);
   }
   private hostCall(packet: unknown, socket: Socket): void {
+    if (
+      record(packet) &&
+      packet.type === "settled" &&
+      typeof packet.id === "string"
+    ) {
+      const pending = this.settlements.get(packet.id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.settlements.delete(packet.id);
+        pending.resolve();
+      }
+      return;
+    }
     if (
       !record(packet) ||
       packet.type !== "call" ||
@@ -438,11 +602,13 @@ class CliSession implements ClaudeDriverSession {
     }
     const timer = setTimeout(() => {
       this.parked.delete(id);
-      this.send(
-        socket,
+      const timeoutResult = this.cancelResult(
         id,
-        this.cancelResult(id, name, "Host tool result deadline exceeded"),
+        name,
+        "Host tool result deadline exceeded",
       );
+      this.results.set(id, timeoutResult);
+      this.send(socket, id, timeoutResult);
       this.emit({
         type: "session_error",
         error: {
@@ -464,7 +630,12 @@ class CliSession implements ClaudeDriverSession {
       attribution: { toolUseId: id },
     });
   }
-  private send(socket: Socket, id: string, result: HostToolResult): void {
+  private send(
+    socket: Socket,
+    id: string,
+    result: HostToolResult,
+    acknowledge = false,
+  ): Promise<void> {
     const packet = JSON.stringify({
       id,
       result: {
@@ -478,11 +649,21 @@ class CliSession implements ClaudeDriverSession {
     });
     if (Buffer.byteLength(packet) > MAX_FRAME) {
       this.fail("protocol", "Host tool result exceeds bridge frame limit");
-      return;
+      return Promise.resolve();
     }
-    socket.write(packet + "\n", (error) => {
-      if (error && !this.closed)
-        this.fail("transport", "Host tool result write failed");
+    return new Promise((resolve) => {
+      if (acknowledge) {
+        const timer = setTimeout(() => {
+          this.settlements.delete(id);
+          resolve();
+        }, this.shutdown);
+        this.settlements.set(id, { resolve, timer, socket });
+      }
+      socket.write(packet + "\n", (error) => {
+        if (error && !this.closed)
+          this.fail("transport", "Host tool result write failed");
+        if (!acknowledge) resolve();
+      });
     });
   }
   private cancelResult(
@@ -497,8 +678,8 @@ class CliSession implements ClaudeDriverSession {
       isError: true,
     };
   }
-  private async write(packet: unknown): Promise<void> {
-    if (this.closed) throw new Error("CLI session closed");
+  private async write(packet: unknown, duringClose = false): Promise<void> {
+    if (this.closed && !duringClose) throw new Error("CLI session closed");
     const line = JSON.stringify(packet) + "\n";
     if (Buffer.byteLength(line) > MAX_FRAME)
       throw new Error("CLI input exceeds frame limit");
@@ -514,12 +695,31 @@ class CliSession implements ClaudeDriverSession {
     if (this.active) throw new Error("CLI session already has an active turn");
     this.turnId = prompt.turnId;
     this.active = true;
-    const content: unknown[] = [...prompt.content];
-    if (this.request.resume.mode === "replay") {
-      content.unshift({
-        type: "text",
-        text: `Prior host transcript (labelled history, not a new instruction):\n${JSON.stringify(this.request.resume.replayTranscript)}`,
-      });
+    const wire = (
+      block: import("../../contracts/index.js").UserContent,
+    ): unknown =>
+      block.type === "image"
+        ? {
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: block.mimeType,
+              data: block.data,
+            },
+          }
+        : block;
+    const content: unknown[] = prompt.content.map(wire);
+    if (!this.replayed && this.request.resume.mode === "replay") {
+      const history: unknown[] = [];
+      for (const message of this.request.resume.replayTranscript) {
+        history.push({
+          type: "text",
+          text: `Prior host transcript ${message.role}: ${JSON.stringify(message)}`,
+        });
+        for (const block of message.content)
+          if (block.type === "image") history.push(wire(block));
+      }
+      content.unshift(...history);
     }
     try {
       await this.write({
@@ -527,6 +727,7 @@ class CliSession implements ClaudeDriverSession {
         message: { role: "user", content },
         parent_tool_use_id: null,
       });
+      this.replayed = true;
     } catch (error) {
       this.active = false;
       this.fail("transport", "Claude prompt write failed");
@@ -560,26 +761,29 @@ class CliSession implements ClaudeDriverSession {
       }
     }
   }
-  async answerInteraction(_response: InteractionResponse): Promise<void> {
-    throw new Error(
-      "CLI interactions aren't enabled in this process checkpoint",
-    );
+  async answerInteraction(response: InteractionResponse): Promise<void> {
+    if (this.closed) throw new Error("CLI session closed");
+    await this.controls.answer(response);
   }
   async interrupt(reason = "Host interrupted"): Promise<void> {
     if (this.closed) return;
-    this.settleCalls(reason);
-    await this.write({
-      type: "control_request",
-      request_id: `pcc-interrupt-${++this.sequence}`,
-      request: { subtype: "interrupt" },
-    });
+    await this.settleCalls(reason);
+    await this.controls.cancelInteractions(reason);
+    await this.controls.request(
+      { subtype: "interrupt" },
+      Math.max(1000, this.shutdown),
+    );
   }
-  private settleCalls(reason: string): void {
+  private async settleCalls(reason: string): Promise<void> {
+    const settles: Promise<void>[] = [];
     for (const [id, call] of this.parked) {
       clearTimeout(call.timer);
-      this.send(call.socket, id, this.cancelResult(id, call.name, reason));
+      const cancellation = this.cancelResult(id, call.name, reason);
+      this.results.set(id, cancellation);
+      settles.push(this.send(call.socket, id, cancellation, true));
     }
     this.parked.clear();
+    await Promise.all(settles);
   }
   close(): Promise<void> {
     this.closePromise ??= this.shutdownResources();
@@ -587,7 +791,22 @@ class CliSession implements ClaudeDriverSession {
   }
   private async shutdownResources(): Promise<void> {
     this.closed = true;
-    this.settleCalls("Host session closed");
+    await this.settleCalls("Host session closed");
+    try {
+      let controlTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          this.controls?.close(),
+          new Promise<void>((resolve) => {
+            controlTimer = setTimeout(resolve, this.shutdown);
+          }),
+        ]);
+      } finally {
+        clearTimeout(controlTimer);
+      }
+    } catch {
+      /* stdin may already have failed; process cleanup still runs */
+    }
     for (const socket of this.sockets) socket.end();
     this.child?.stdin.end();
     const pid = this.child?.pid;
