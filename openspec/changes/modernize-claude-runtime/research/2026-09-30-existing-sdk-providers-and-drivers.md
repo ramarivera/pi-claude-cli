@@ -14,11 +14,11 @@ Assess selectable official Claude Agent SDK and raw `claude -p` drivers below th
 
 Live Pi.dev directory pages list these related provider extensions:
 
-| Package | Directory version/date | Role and relationship |
-| --- | --- | --- |
-| [pi-claude-bridge](https://pi.dev/packages/pi-claude-bridge) | 0.9.0, September 28 | Claude SDK-backed model provider plus optional AskClaude delegation; original author Eli Dickinson |
-| [pi-claude-agent-sdk](https://pi.dev/packages/pi-claude-agent-sdk) | 0.8.6, September 1 | SDK-backed provider fork of pi-claude-bridge maintained in pi-pod |
-| [claude-agent-sdk-pi](https://pi.dev/packages/claude-agent-sdk-pi?page=39) | 1.0.22, May 16 | Earlier provider by Prateek Sunal; ancestor of the other two |
+| Package                                                                    | Directory version/date | Role and relationship                                                                              |
+| -------------------------------------------------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------- |
+| [pi-claude-bridge](https://pi.dev/packages/pi-claude-bridge)               | 0.9.0, September 28    | Claude SDK-backed model provider plus optional AskClaude delegation; original author Eli Dickinson |
+| [pi-claude-agent-sdk](https://pi.dev/packages/pi-claude-agent-sdk)         | 0.8.6, September 1     | SDK-backed provider fork of pi-claude-bridge maintained in pi-pod                                  |
+| [claude-agent-sdk-pi](https://pi.dev/packages/claude-agent-sdk-pi?page=39) | 1.0.22, May 16         | Earlier provider by Prateek Sunal; ancestor of the other two                                       |
 
 These are one related lineage, not three independent new architectures. Source package versions match those directory snapshots. Additional catalog results included [pi-provider-cc-sdk](https://pi.dev/packages/pi-provider-cc-sdk?page=61) and other bridge forks; they weren't deeply inspected. This search confirms existence, not an exhaustive catalog audit or runtime endorsement. The original package's plain directory URL failed through the web reader; the directory URL with its pagination query worked.
 
@@ -28,12 +28,12 @@ The SDK-backed model-provider packages are closer references for Pi-owned tools 
 
 Synced clean reference caches via context-research. HEAD matched origin/HEAD:
 
-| Repository | Commit | Checked-out branch |
-| --- | --- | --- |
-| elidickinson/pi-claude-bridge | `a78a2a5525e96318f8dba7f9fd32ce2191be0136` | main |
-| pi-pod/pi-claude-agent-sdk | `5293c03fc1e250725c9e23472eec767a5a302caf` | main |
-| prateekmedia/claude-agent-sdk-pi | `de1a64373e1c4839a177802eeeb894f611235ca3` | master |
-| durandom/pi-ca-leash | `a3743207cdfffbaf6b7d3a4b5731cf3a9b5713ae` | main |
+| Repository                       | Commit                                     | Checked-out branch |
+| -------------------------------- | ------------------------------------------ | ------------------ |
+| elidickinson/pi-claude-bridge    | `a78a2a5525e96318f8dba7f9fd32ce2191be0136` | main               |
+| pi-pod/pi-claude-agent-sdk       | `5293c03fc1e250725c9e23472eec767a5a302caf` | main               |
+| prateekmedia/claude-agent-sdk-pi | `de1a64373e1c4839a177802eeeb894f611235ca3` | master             |
+| durandom/pi-ca-leash             | `a3743207cdfffbaf6b7d3a4b5731cf3a9b5713ae` | main               |
 
 Cache paths are `/home/ramarivera/.context/<owner>/<repository>`. Subject checkout remains `/home/ramarivera/dev/pi-claude-cli`, clean main at `e0c9a12ac21be4c197e82795f7207746f3183028`.
 
@@ -41,14 +41,14 @@ The current bridge targets canonical Pi peers >=0.86.1 and Agent SDK ^0.3.284; t
 
 ## Closest providers: source-confirmed behavior
 
-| Area | Current pi-claude-bridge | pi-pod fork | Original claude-agent-sdk-pi |
-| --- | --- | --- | --- |
-| Authentication owner | SDK child inherits process environment and Claude Code auth state; runtime doesn't extract/inject Pi OAuth | Resolves Pi Anthropic auth, removes inherited auth overrides, injects the resolved OAuth/API credential into the SDK child | SDK options don't override env; inherits Claude Code login or API-key environment |
-| Tool ownership | Disables Claude native tools, advertises active Pi tools via in-process MCP, parks calls until Pi returns matching results | Same live MCP handoff shape | Denies Claude execution, ends query after proposed tools, builds the next request from Pi history |
-| Query continuity | Keeps the query alive across the Pi tool execution boundary; eventually closes/reopens according to session lifecycle | Same general architecture | No SDK resume path found |
-| Session/history | Captures Claude identity and resumes/rebuilds/rotates sessions using cc-session-io and Pi history | Similar session-file synchronization; per-query state supports reentrancy/subagents | Uses a tool-result ledger rather than persisted Claude session resume |
-| Testing | Offline unit command plus full command with real Pi/Claude integration and installed SDK/CLI contract probes | Offline unit command plus real Pi/Claude integration, subagent and shutdown checks | No tests directory or test script found |
-| Host coupling | Canonical Pi API/types, tool schema/context/lifecycle/UI; no distinct OMP adapter found | Pi API/context/auth/lifecycle; no distinct OMP adapter found | Older Pi API/context; no distinct OMP adapter found |
+| Area                 | Current pi-claude-bridge                                                                                                   | pi-pod fork                                                                                                                | Original claude-agent-sdk-pi                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Authentication owner | SDK child inherits process environment and Claude Code auth state; runtime doesn't extract/inject Pi OAuth                 | Resolves Pi Anthropic auth, removes inherited auth overrides, injects the resolved OAuth/API credential into the SDK child | SDK options don't override env; inherits Claude Code login or API-key environment                 |
+| Tool ownership       | Disables Claude native tools, advertises active Pi tools via in-process MCP, parks calls until Pi returns matching results | Same live MCP handoff shape                                                                                                | Denies Claude execution, ends query after proposed tools, builds the next request from Pi history |
+| Query continuity     | Keeps the query alive across the Pi tool execution boundary; eventually closes/reopens according to session lifecycle      | Same general architecture                                                                                                  | No SDK resume path found                                                                          |
+| Session/history      | Captures Claude identity and resumes/rebuilds/rotates sessions using cc-session-io and Pi history                          | Similar session-file synchronization; per-query state supports reentrancy/subagents                                        | Uses a tool-result ledger rather than persisted Claude session resume                             |
+| Testing              | Offline unit command plus full command with real Pi/Claude integration and installed SDK/CLI contract probes               | Offline unit command plus real Pi/Claude integration, subagent and shutdown checks                                         | No tests directory or test script found                                                           |
+| Host coupling        | Canonical Pi API/types, tool schema/context/lifecycle/UI; no distinct OMP adapter found                                    | Pi API/context/auth/lifecycle; no distinct OMP adapter found                                                               | Older Pi API/context; no distinct OMP adapter found                                               |
 
 The current bridge calls SDK query with an AsyncIterable prompt, `tools: []`, Pi MCP servers, and the selected cwd/model/resume/executable. On a tool request it completes the current Pi provider stream with a tool-use outcome, while the underlying MCP call waits. Pi executes the tool, invokes the provider again with results, and the bridge resolves the parked MCP call by tool-call ID. This keeps Claude's query alive across that boundary rather than killing Claude. Parallel result delivery must pair by ID, not ordering. [SDK query options](https://github.com/elidickinson/pi-claude-bridge/blob/a78a2a5525e96318f8dba7f9fd32ce2191be0136/src/index.ts#L1956), [MCP correlation](https://github.com/elidickinson/pi-claude-bridge/blob/a78a2a5525e96318f8dba7f9fd32ce2191be0136/src/mcp-server.ts#L29), [tool-result delivery](https://github.com/elidickinson/pi-claude-bridge/blob/a78a2a5525e96318f8dba7f9fd32ce2191be0136/src/index.ts#L1585).
 
