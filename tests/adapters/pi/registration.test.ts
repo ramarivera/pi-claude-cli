@@ -143,6 +143,54 @@ describe("current Pi provider registration", () => {
       expect(events.at(-1)).toMatchObject({ type: "done" });
     },
   );
+  it.each([{ parentToolUseId: "toolu_parent" }, { agentId: "agent-child" }])(
+    "keeps child initialization $parentToolUseId$agentId observable without consuming the parent response",
+    async (attribution) => {
+      const native = host();
+      const child: ClaudeRoundEvent = {
+        type: "driver_event",
+        roundId: "r",
+        event: {
+          type: "initialized",
+          claudeSessionId: "claude-child",
+          model: model.id,
+          runtimeVersion: "2.1",
+          capabilities: [],
+          tools: [],
+          mcpServers: [],
+          sequence: 1,
+          attribution: { ...attribution, claudeSessionId: "claude-child" },
+        },
+      };
+      const backend = runtime([child, initialized(), terminal]);
+      registerPiAdapter(native.pi, {
+        configuration: {
+          ...configuration,
+          settings: { ...configuration.settings, forwardSubagentText: true },
+        },
+        runtimeFactory: async () => backend,
+      });
+      await native.emit({ type: "session_start", reason: "startup" });
+      const order: string[] = [];
+      const response = vi.fn((value: ProviderResponse) => {
+        order.push("response");
+        expect(value.headers["x-pi-claude-session-id"]).toBe("claude-real");
+      });
+      const observed = vi.fn((event: unknown) => {
+        order.push((event as { claudeSessionId: string }).claudeSessionId);
+      });
+      const events = await collect(
+        native.provider().streamSimple(model, transcript(), {
+          onResponse: response,
+          onProviderStreamEvent: observed,
+        }),
+      );
+      expect(order).toEqual(["claude-child", "response", "claude-real"]);
+      expect(response).toHaveBeenCalledTimes(1);
+      expect(observed.mock.calls[0][0]).toEqual(child.event);
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+    },
+  );
   it("doesn't reuse a cached session ID for diagnostics before a replacement query initializes", async () => {
     const native = host();
     let turn = 0;

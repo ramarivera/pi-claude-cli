@@ -152,9 +152,13 @@ export function registerPiAdapter(
                 "Pi provider round was invalidated while streaming",
               );
             if (event.type === "driver_event") {
-              sawDriverEvent = true;
+              const mainEvent = !(
+                event.event.attribution.parentToolUseId ||
+                event.event.attribution.agentId
+              );
+              sawDriverEvent ||= mainEvent;
               watchdog.touch();
-              if (event.event.type === "initialized")
+              if (mainEvent && event.event.type === "initialized")
                 state.claudeSessionId = event.event.claudeSessionId;
               // A prior host round may have a different resident query after core reconciliation.
               // Use identity observed on this event, never a stale cache for pre-init diagnostics.
@@ -162,7 +166,7 @@ export function registerPiAdapter(
                 event.event.type === "initialized"
                   ? event.event.claudeSessionId
                   : event.event.attribution.claudeSessionId;
-              if (claudeId) await observeResponse(claudeId);
+              if (mainEvent && claudeId) await observeResponse(claudeId);
               await withSignal(
                 Promise.resolve(
                   streamOptions.onProviderStreamEvent?.(

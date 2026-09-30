@@ -20,7 +20,9 @@ adapter. Invalid replacement shapes fail the round.
 `onResponse` runs once per round when initialization or the current driver's
 attribution provides an authoritative Claude session ID, with status `0` and
 the selected driver/transport. Pre-initialization diagnostics still reach the
-stream-event hook in order. If transport events arrive but initialization fails,
+stream-event hook in order. Child frames remain observable but don't update the
+parent's identity or consume its response callback. If parent transport events
+arrive but initialization fails,
 the terminal error triggers an ID-free response with
 `x-pi-claude-initialization: unobserved`. Failures before any driver event don't
 claim a response. A prior round's cached ID isn't used for new startup diagnostics.
