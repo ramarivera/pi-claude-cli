@@ -1,10 +1,32 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readRuntimeConfiguration } from "../entrypoints/config.js";
 
 describe("shared entrypoint configuration", () => {
+  it.each(["cli", "sdk"] as const)(
+    "constructs and closes the production %s runtime without loading the official query or making inference",
+    async (driver) => {
+      vi.resetModules();
+      vi.doMock("@anthropic-ai/claude-agent-sdk", () => {
+        throw new Error("Official inference module must stay lazy");
+      });
+      try {
+        const { createConfiguredRuntime } =
+          await import("../entrypoints/runtime.js");
+        const runtime = await createConfiguredRuntime(
+          readRuntimeConfiguration({ PI_CLAUDE_DRIVER: driver }),
+        );
+        await runtime.closeAll();
+        expect(runtime.streamRound).toBeTypeOf("function");
+      } finally {
+        vi.doUnmock("@anthropic-ai/claude-agent-sdk");
+        vi.resetModules();
+      }
+    },
+  );
+
   it("defaults to the original CLI driver and official login without activating native tools", () => {
     const config = readRuntimeConfiguration({
       CLAUDE_CONFIG_DIR: "/own-login",

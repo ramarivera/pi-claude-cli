@@ -1,7 +1,8 @@
 schema: spec-driven
 context: |
-  TypeScript Pi extension; planned neutral core with official SDK/CLI drivers and Pi/OMP adapters.
-  Implementation is deferred until Ramiro explicitly says to start.
+  TypeScript extension with a neutral core, official SDK/CLI drivers and native Pi/OMP adapters.
+  Ramiro authorized full implementation, scoped commits and bounded authenticated live runs on 2026-09-30.
+  Target current Pi 0.99.1, OMP 18.4.4, Claude 2.1.285 and SDK 0.3.285; legacy migration is excluded.
   Exactly-one-owner tools, native schemas, own Claude login and four real host/driver E2E cases are required.
   OpenSpec owns requirements; beads owns statuses/dependencies; lanes.json owns file allocation.
   Preserve historical .planning evidence; this change supersedes historical SDK exclusion for this effort.
@@ -12,7 +13,7 @@ rules:
 operations:
   apply:
     guidance:
-      - Do not start while implementation-start is deferred.
+      - Follow the current authorization and execution evidence in the change's execution.md.
       - Use one integration owner for shared files and approved dependencies.
       - Live tests require opt-in and account/usage readiness; unrun combinations remain incomplete.
 
