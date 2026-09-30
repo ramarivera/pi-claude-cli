@@ -100,7 +100,7 @@ async function boundary(host: "pi" | "omp", kind: DriverKind) {
     cwd: process.cwd(),
     sessionManager: { getSessionId: () => "native-host-session" },
     agent: { kind: "main", id: "Main", name: "main", depth: 0 },
-    ui: { setStatus: () => {} },
+    ui: { setStatus: () => {}, notify: vi.fn() },
   };
   const runtimeFactory = vi.fn(async () => runtime);
   if (host === "pi") {
@@ -153,6 +153,7 @@ async function boundary(host: "pi" | "omp", kind: DriverKind) {
           messages: history,
         }),
         {
+          sessionId: context.sessionManager.getSessionId(),
           onResponse: (response) => {
             responses.push(response);
           },
@@ -204,6 +205,7 @@ async function boundary(host: "pi" | "omp", kind: DriverKind) {
   let provider: OmpProvider | undefined;
   const native = {
     on,
+    logger: { error: vi.fn() },
     events: { emit: vi.fn() },
     registerProvider: (id: string, config: OmpProvider) => {
       expect(id).toBe("pi-claude-cli");
@@ -230,6 +232,7 @@ async function boundary(host: "pi" | "omp", kind: DriverKind) {
     provider: "pi-claude-cli",
   };
   const history: OmpMessage[] = [];
+  const providerSessionState = new Map();
   const run = async () => {
     const stream = streamSimple(
       model,
@@ -247,6 +250,8 @@ async function boundary(host: "pi" | "omp", kind: DriverKind) {
         messages: history,
       },
       {
+        sessionId: context.sessionManager.getSessionId(),
+        providerSessionState,
         onResponse: (response) => {
           responses.push(response);
         },

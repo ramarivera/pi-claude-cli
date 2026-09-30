@@ -119,12 +119,14 @@ export function registerPiAdapter(
                 "Pi provider round was invalidated before runtime initialization",
               )
             );
+          const callScope = state.disposable ? "auxiliary" : "session";
           let observed = false;
           let sawDriverEvent = false;
           const observeResponse = async (claudeId?: string) => {
             if (observed) return;
             observed = true;
             const headers: Record<string, string> = {
+              "x-pi-claude-call-scope": callScope,
               "x-pi-claude-driver": configuration.driver,
               "x-pi-claude-transport":
                 configuration.driver === "cli" ? "subprocess" : "agent-sdk",
@@ -191,11 +193,13 @@ export function registerPiAdapter(
                   state,
                   event.reason === "aborted" ? "abort" : "reset",
                 );
-              if (state.parentId && !state.parked)
+              if (state.disposable || (state.parentId && !state.parked))
                 await lifecycle.closeState(state);
             }
             projection.accept(event);
           }
+          if (state.disposable && !state.retired)
+            await lifecycle.closeState(state);
           projection.finish();
         } catch (caught) {
           let error: unknown = caught;

@@ -116,6 +116,182 @@ afterEach(() => {
 });
 
 describe("Pi native lifecycle", () => {
+  it("closes disposable tool-use and error terminals", async () => {
+    const native = await setup([initialized(), parked]);
+    const first = await collect(
+      native.rawProvider().streamSimple(model, toolPrompt(), {}),
+    );
+    expect(first.at(-1)).toMatchObject({ type: "done", reason: "toolUse" });
+    expect(native.backend.close).toHaveBeenCalledOnce();
+    vi.mocked(native.backend.streamRound).mockImplementationOnce(
+      async function* () {
+        yield initialized();
+        throw new Error("auxiliary failure");
+      },
+    );
+    const second = await collect(
+      native.rawProvider().streamSimple(model, prompt(), {}),
+    );
+    expect(second.at(-1)).toMatchObject({ type: "error", reason: "error" });
+    expect(native.backend.close).toHaveBeenCalledTimes(2);
+    await native.emit({ type: "session_shutdown", reason: "new" });
+    expect(native.backend.close).toHaveBeenCalledTimes(3);
+  });
+  it("preserves a pending owned factory when a disposable caller aborts", async () => {
+    const native = await setup();
+    let resolve!: (runtime: typeof native.backend) => void;
+    native.factory.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const main = native.run();
+    const controller = new AbortController();
+    const auxiliary = collect(
+      native
+        .rawProvider()
+        .streamSimple(model, prompt(), { signal: controller.signal }),
+    );
+    await flush();
+    controller.abort();
+    expect((await auxiliary).at(-1)).toMatchObject({
+      type: "error",
+      reason: "aborted",
+    });
+    expect(native.backend.closeAll).not.toHaveBeenCalled();
+    resolve(native.backend);
+    expect((await main).at(-1)).toMatchObject({ type: "done", reason: "stop" });
+    expect(native.backend.streamRound).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(native.backend.streamRound).mock.calls[0][0].session.sessionId,
+    ).toBe("host-session");
+    expect(native.backend.closeAll).not.toHaveBeenCalled();
+    await native.emit({ type: "session_shutdown", reason: "new" });
+  });
+  it("isolates two unowned calls from an active main round and closes each auxiliary independently", async () => {
+    const native = host();
+    const requests: HostRoundRequest[] = [];
+    const releases = new Map<string, () => void>();
+    const backend: ClaudeRuntime = {
+      ...runtime([]),
+      streamRound: async function* (request) {
+        requests.push(request);
+        yield initialized();
+        await new Promise<void>((resolve) => {
+          releases.set(request.session.sessionId, resolve);
+          request.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+        });
+        yield { ...stop, reason: request.signal?.aborted ? "aborted" : "stop" };
+      },
+    };
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: async () => backend,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const main = collect(native.provider().streamSimple(model, prompt()));
+    await flush();
+    const firstController = new AbortController();
+    const firstResponse = vi.fn();
+    const secondResponse = vi.fn();
+    const first = collect(
+      native.rawProvider().streamSimple(model, prompt(), {
+        signal: firstController.signal,
+        onResponse: firstResponse,
+      }),
+    );
+    const second = collect(
+      native
+        .rawProvider()
+        .streamSimple(model, prompt(), { onResponse: secondResponse }),
+    );
+    await flush();
+    expect(requests).toHaveLength(3);
+    const [mainRequest, firstRequest, secondRequest] = requests;
+    expect(mainRequest.session.sessionId).toBe("host-session");
+    expect(
+      new Set(requests.map((request) => request.session.sessionId)).size,
+    ).toBe(3);
+    expect(firstRequest.session.sessionId).toMatch(/^[\da-f-]{36}$/);
+    const duplicate = await collect(
+      native.provider().streamSimple(model, prompt()),
+    );
+    expect(duplicate.at(-1)).toMatchObject({
+      type: "error",
+      error: { errorMessage: expect.stringContaining("Concurrent Pi") },
+    });
+    expect(backend.invalidate).not.toHaveBeenCalled();
+    firstController.abort();
+    expect((await first).at(-1)).toMatchObject({
+      type: "error",
+      reason: "aborted",
+    });
+    expect(mainRequest.signal?.aborted).toBe(false);
+    expect(secondRequest.signal?.aborted).toBe(false);
+    expect(backend.close).toHaveBeenCalledExactlyOnceWith(
+      firstRequest.session.sessionId,
+    );
+    expect(backend.invalidate).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sessionId: firstRequest.session.sessionId }),
+      "abort",
+    );
+    releases.get(secondRequest.session.sessionId)!();
+    expect((await second).at(-1)).toMatchObject({
+      type: "done",
+      reason: "stop",
+    });
+    expect(backend.close).toHaveBeenCalledWith(secondRequest.session.sessionId);
+    expect(backend.close).not.toHaveBeenCalledWith(
+      mainRequest.session.sessionId,
+    );
+    expect(
+      firstResponse.mock.calls[0][0].headers["x-pi-claude-call-scope"],
+    ).toBe("auxiliary");
+    expect(
+      secondResponse.mock.calls[0][0].headers["x-pi-claude-call-scope"],
+    ).toBe("auxiliary");
+    releases.get(mainRequest.session.sessionId)!();
+    await main;
+    await native.emit({ type: "session_shutdown", reason: "new" });
+    expect(backend.close).toHaveBeenCalledTimes(3);
+  });
+  it("doesn't inherit a main context abort signal for an unowned call, but host shutdown owns it", async () => {
+    const native = host();
+    const controller = new AbortController();
+    const requests: HostRoundRequest[] = [];
+    const backend: ClaudeRuntime = {
+      ...runtime([]),
+      streamRound: async function* (request) {
+        requests.push(request);
+        await new Promise<void>((resolve) =>
+          request.signal?.addEventListener("abort", () => resolve(), {
+            once: true,
+          }),
+        );
+        yield { ...stop, reason: "aborted" };
+      },
+    };
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: async () => backend,
+    });
+    await native.emit(
+      { type: "session_start", reason: "startup" },
+      ctx("host-session", "/project", "leaf", controller.signal),
+    );
+    const auxiliary = collect(
+      native.rawProvider().streamSimple(model, prompt()),
+    );
+    await flush();
+    controller.abort();
+    expect(requests[0].signal?.aborted).toBe(false);
+    await native.emit({ type: "session_shutdown", reason: "new" });
+    await auxiliary;
+    expect(requests[0].signal?.aborted).toBe(true);
+    expect(backend.close).toHaveBeenCalledWith(requests[0].session.sessionId);
+  });
   it("keeps branch/revision stable as ordinary leaves advance and captures actual cwd", async () => {
     const native = await setup();
     await native.run();

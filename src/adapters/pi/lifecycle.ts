@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -12,6 +13,7 @@ export interface PiSessionState {
   identity: HostSessionIdentity;
   cwd: string;
   parentId?: string;
+  disposable: boolean;
   claudeSessionId?: string;
   active: boolean;
   parked: boolean;
@@ -94,11 +96,13 @@ export class PiLifecycle {
     sessionId: string,
     cwd: string,
     parentId?: string,
+    disposable = false,
   ): PiSessionState {
     const state: PiSessionState = {
       identity: { sessionId, branchId: "main", historyRevision: "0" },
       cwd,
       parentId,
+      disposable,
       active: false,
       parked: false,
       retired: false,
@@ -123,8 +127,16 @@ export class PiLifecycle {
       : undefined;
     if (!current)
       throw new Error("Pi session_start must run before the provider round");
-    if (!providerSessionId || providerSessionId === current.identity.sessionId)
-      return current;
+    // Raw extension complete()/stream() calls carry no native ownership. A
+    // captured main context supplies cwd/shutdown ownership, never routing.
+    if (!providerSessionId)
+      return this.create(
+        randomUUID(),
+        current.cwd,
+        current.identity.sessionId,
+        true,
+      );
+    if (providerSessionId === current.identity.sessionId) return current;
     // Pi summaries and extension subagents may supply an independent routing ID.
     return (
       this.sessions.get(providerSessionId) ??
@@ -186,6 +198,7 @@ export class PiLifecycle {
     return controller.signal;
   }
   async closeState(state: PiSessionState): Promise<void> {
+    if (state.retired) return state.cleanup;
     state.retired = true;
     state.generation++;
     state.parked = false;

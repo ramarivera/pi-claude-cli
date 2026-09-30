@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type {
   ProviderSessionState,
@@ -28,6 +29,8 @@ export interface OmpSessionState {
   detachAbort?: () => void;
   nativeMaps: Set<Map<string, ProviderSessionState>>;
   nativeKey: string;
+  key: string;
+  disposable: boolean;
 }
 class OmpProviderState implements ProviderSessionState {
   constructor(
@@ -52,18 +55,71 @@ function bounded(value: string): string {
 export class OmpLifecycle {
   private readonly sessions = new Map<string, OmpSessionState>();
   private currentContext?: ExtensionContext;
-  private runtimePromise?: Promise<ClaudeRuntime>;
+  private runtimeSlot?: {
+    pending: Promise<ClaudeRuntime>;
+    value?: ClaudeRuntime;
+  };
+  private readonly deferredCleanupErrors: unknown[] = [];
   private api?: ExtensionAPI;
   constructor(private readonly factory: () => Promise<ClaudeRuntime>) {}
-  runtime(): Promise<ClaudeRuntime> {
-    if (!this.runtimePromise) {
-      const pending = this.factory();
-      this.runtimePromise = pending;
-      void pending.catch(() => {
-        if (this.runtimePromise === pending) this.runtimePromise = undefined;
-      });
+  runtime(owner?: OmpSessionState): Promise<ClaudeRuntime> {
+    const generation = owner?.generation;
+    if (this.deferredCleanupErrors.length)
+      throw new AggregateError(
+        this.deferredCleanupErrors.splice(0),
+        "OMP deferred runtime cleanup failed",
+      );
+    if (!this.runtimeSlot) {
+      const slot = {
+        pending: this.factory(),
+        value: undefined as ClaudeRuntime | undefined,
+      };
+      this.runtimeSlot = slot;
+      void slot.pending.then(
+        (value) => {
+          slot.value = value;
+        },
+        () => {
+          if (this.runtimeSlot === slot) this.runtimeSlot = undefined;
+        },
+      );
     }
-    return this.runtimePromise;
+    const pending = this.runtimeSlot.pending;
+    // A factory may trigger native cancellation before its pending slot is recorded.
+    if (
+      owner &&
+      (owner.retired ||
+        owner.generation !== generation ||
+        owner.controller?.signal.aborted)
+    )
+      this.runtimeForCleanup(owner);
+    return pending;
+  }
+  private runtimeForCleanup(
+    exclude?: OmpSessionState,
+  ): ClaudeRuntime | undefined {
+    const slot = this.runtimeSlot;
+    if (!slot || slot.value) return slot?.value;
+    if (
+      ![...this.sessions.values()].some(
+        (state) =>
+          state !== exclude &&
+          !state.retired &&
+          (state.active || state.parked) &&
+          !state.controller?.signal.aborted,
+      )
+    ) {
+      this.runtimeSlot = undefined;
+      void slot.pending
+        .then(
+          (runtime) => runtime.closeAll(),
+          () => {},
+        )
+        .catch((error: unknown) => {
+          this.deferredCleanupErrors.push(error);
+        });
+    }
+    return undefined;
   }
   capture(ctx: ExtensionContext): void {
     this.currentContext = ctx;
@@ -88,7 +144,9 @@ export class OmpLifecycle {
       );
     const hostId = ctx.sessionManager.getSessionId();
     const agent = agentKey(ctx);
-    const key = sessionKey(hostId, agent, options.sessionId ?? hostId);
+    const disposable = !options.sessionId && !options.providerSessionState;
+    const routingId = disposable ? randomUUID() : (options.sessionId ?? hostId);
+    const key = sessionKey(hostId, agent, routingId);
     const nativeKey = `pi-claude-cli:${agent}`;
     const existing = options.providerSessionState?.get(nativeKey);
     if (
@@ -101,10 +159,11 @@ export class OmpLifecycle {
       const cleanup = state?.cleanup ?? Promise.resolve();
       state = {
         identity: {
-          sessionId:
-            ctx.agent.kind === "main" &&
-            ctx.agent.id === "Main" &&
-            (!options.sessionId || options.sessionId === hostId)
+          sessionId: disposable
+            ? routingId
+            : ctx.agent.kind === "main" &&
+                ctx.agent.id === "Main" &&
+                (!options.sessionId || options.sessionId === hostId)
               ? hostId
               : key,
           branchId: "root",
@@ -121,6 +180,8 @@ export class OmpLifecycle {
         cleanup,
         nativeMaps: new Set(),
         nativeKey,
+        key,
+        disposable,
       };
       this.sessions.set(key, state);
     }
@@ -153,10 +214,7 @@ export class OmpLifecycle {
     const abort = () => {
       controller.abort(signal?.reason);
       void this.invalidate(state, "abort").catch((error: unknown) => {
-        state.context.ui.setStatus(
-          "pi-claude-cli-cleanup",
-          `Claude cleanup failed: ${bounded(error instanceof Error ? error.message : "runtime error")}`,
-        );
+        this.reportCleanup(state, error);
       });
     };
     if (signal) {
@@ -179,10 +237,11 @@ export class OmpLifecycle {
     state.parked = false;
     state.controller?.abort(reason);
     this.detach(state);
-    state.context.ui.setStatus("pi-claude-cli-progress", undefined);
-    const runtime = this.runtimePromise;
+    if (!state.disposable)
+      state.context.ui.setStatus("pi-claude-cli-progress", undefined);
+    const runtime = this.runtimeForCleanup(state);
     state.cleanup = state.cleanup.then(async () => {
-      if (runtime) await (await runtime).invalidate(identity, reason);
+      if (runtime) await runtime.invalidate(identity, reason);
     });
     return state.cleanup;
   }
@@ -193,7 +252,8 @@ export class OmpLifecycle {
     state.parked = false;
     state.controller?.abort("OMP provider session closed");
     this.detach(state);
-    state.context.ui.setStatus("pi-claude-cli-progress", undefined);
+    if (!state.disposable)
+      state.context.ui.setStatus("pi-claude-cli-progress", undefined);
     for (const map of state.nativeMaps) {
       const entry = map.get(state.nativeKey);
       if (
@@ -203,16 +263,35 @@ export class OmpLifecycle {
       )
         map.delete(state.nativeKey);
     }
-    const runtime = this.runtimePromise;
-    state.cleanup = state.cleanup.then(async () => {
-      if (runtime) await (await runtime).close(state.identity.sessionId);
+    const runtime = this.runtimeForCleanup(state);
+    const close = async () => {
+      if (runtime) await runtime.close(state.identity.sessionId);
+    };
+    state.cleanup = state.cleanup.then(close, async (previous: unknown) => {
+      await close();
+      throw previous;
     });
+    if (state.disposable)
+      void state.cleanup.then(
+        () => {
+          if (this.sessions.get(state.key) === state)
+            this.sessions.delete(state.key);
+        },
+        () => {},
+      );
     // Native close() is synchronous; retain cleanup for subsequent awaited lifecycle hooks.
     void state.cleanup.catch((error: unknown) => {
-      const message = `Claude cleanup failed: ${bounded(error instanceof Error ? error.message : "runtime error")}`;
-      this.api?.logger.error(message);
-      state.context.ui.notify(message, "error");
+      this.reportCleanup(state, error);
     });
+  }
+  async closeState(state: OmpSessionState): Promise<void> {
+    this.retire(state);
+    await state.cleanup;
+  }
+  private reportCleanup(state: OmpSessionState, error: unknown): void {
+    const message = `Claude cleanup failed: ${bounded(error instanceof Error ? error.message : "runtime error")}`;
+    this.api?.logger.error(message);
+    state.context.ui.notify(message, "error");
   }
   observe(
     api: ExtensionAPI,
@@ -230,6 +309,7 @@ export class OmpLifecycle {
     if (diagnostic) {
       api.events.emit("pi-claude-cli:diagnostic", {
         owner: "claude",
+        callScope: state.disposable ? "auxiliary" : "session",
         hostSession: {
           sessionId: diagnosticId(state.identity.sessionId),
           branchId: diagnosticId(state.identity.branchId),
@@ -249,6 +329,7 @@ export class OmpLifecycle {
       return;
     }
     if (
+      state.disposable ||
       ![
         "task",
         "tool-progress",
@@ -343,12 +424,36 @@ export class OmpLifecycle {
         (state) => state.agentKey === agentKey(ctx),
       );
       for (const state of states) this.retire(state);
-      await Promise.all(states.map((state) => state.cleanup));
+      const cleanup = await Promise.allSettled(
+        states.map((state) => state.cleanup),
+      );
+      const failures: unknown[] = cleanup.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
       if (
         [...this.sessions.values()].every((state) => state.retired) &&
-        this.runtimePromise
-      )
-        await (await this.runtimePromise).closeAll();
+        this.runtimeSlot
+      ) {
+        const slot = this.runtimeSlot;
+        this.runtimeSlot = undefined;
+        if (slot.value) {
+          try {
+            await slot.value.closeAll();
+          } catch (error) {
+            failures.push(error);
+          }
+        } else
+          void slot.pending
+            .then(
+              (runtime) => runtime.closeAll(),
+              () => {},
+            )
+            .catch((error: unknown) => {
+              this.deferredCleanupErrors.push(error);
+            });
+      }
+      if (failures.length)
+        throw new AggregateError(failures, "OMP runtime cleanup failed");
     });
   }
 }

@@ -24,7 +24,9 @@ export default function register(api: ExtensionAPI): void {
   api.on("before_agent_start", (event) =>
     systemPrompt("before_agent_start", event.systemPrompt),
   );
-  api.on("before_provider_request", (event) => providerPrompt(event.payload));
+  api.on("before_provider_request", (event, ctx) =>
+    providerPrompt(event.payload, ctx.sessionManager.getSessionId()),
+  );
   api.on("after_provider_response", (event) =>
     response(event.status, event.headers),
   );

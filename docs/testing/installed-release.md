@@ -1,4 +1,30 @@
-# Installed release verification: 0.4.1
+# Installed release verification
+
+## 0.4.3: auxiliary session isolation
+
+The source gate passed 562 tests, unchanged coverage thresholds, all three typechecks, lint, formatting, the plan validator and 45 offline Node harness checks. All four authenticated Sonnet 5.5 source boundary cases passed for Pi/OMP with CLI/SDK. Plain greetings emitted no steering warning; queued input was admitted and consumed with matching native UUID receipts before the original tool result continued. Both answer markers, native session identity and natural transport cleanup passed. Ownership-free extension completions now use disposable independent sessions, with regressions covering a parked main query alongside successful and aborted auxiliary calls.
+
+Publication and installed-package validation are pending. This section will record their actual results after registry verification and targeted managed deployment. The installed harness keeps managed companion extensions enabled and disables configured external OMP MCP servers only in its owned test session.
+
+## 0.4.2: warning and boundary steering
+
+Published release commit/tag: `8775c679e76cf73fb27545d74dd8fd59fb6b427d`. [Publish workflow 36787214086](https://github.com/ramarivera/pi-claude-cli/actions/runs/36787214086) and [GitHub release](https://github.com/ramarivera/pi-claude-cli/releases/tag/v0.4.2) succeeded. npm's `latest` tag is `0.4.2`; its SLSA attestation identifies that exact source commit and `publish.yml`. Registry integrity matched the checked release tarball:
+
+```text
+sha512-S6cecf120KOv+Ns2QpoUDou/jh1tyO0RJG37oAGZmTJOauH4m+3OgpZNJ4qkF14/ZRgjVt3DeAdnChPm4GQCRQ==
+```
+
+Toolbox pins were pushed as `219137c57ad0bc03e9b56008fabb13635e112b43` and applied to the two managed targets. Both actual installed packages are `0.4.2`, with OMP's plugin enabled. The source Sonnet 5.5 boundary matrix passed for Pi/OMP and CLI/SDK; each case proved native queue admission and consumption, answer correction, original tool/result ownership, stable session identity and natural Claude cleanup. See the [execution record](../../openspec/changes/fix-claude-steering/execution.md).
+
+The first installed matrix did **not** pass. OMP SDK exposed Remnic dropping OMP's array system prompt; OMP CLI returned an unclassified host error. Pi CLI completed steering but retained an earlier assistant error in history; Pi SDK completed steering then failed the process check after `new_session` created Node/esbuild helpers. Failed receipts remain under `~/dev/agentic-scratchpads/pi-claude-cli/main/receipts/`; they aren't counted as successful runs. Remnic's managed adapter was fixed separately in Toolbox `e8d7ff97d` and verified with four behavior tests before targeted apply and bundle rebuild. Installed validation remains in progress.
+
+### Installation incident and recovery
+
+The initial Pi `npm install --prefix` unexpectedly re-resolved optional peers and unrelated transitive packages. Recovery restored 29 changed root versions from integrity-verified official tarballs, preserved retained nested dependency bytes, quarantined 11 introduced roots, and rebuilt both package locks against 539 actual installed entries. All 486 pre-recorded Pi root names/versions now match except the intended bridge upgrade. The old inventory didn't record two removed and two changed nested paths, so exact historical equality of the complete nested graph remains unverified (`pcc-bgy`). A complete post-incident tree/lock backup and recovery report remain in `main/pi-recovery-20260930T230325Z/` under the scratch directory.
+
+OMP's ordinary npm install stopped at an existing Coding Buddy optional-peer conflict without changing its tree. The bridge was then materialized from the verified registry tarball with unchanged production dependencies; its nested dependencies were retained, and only the relevant Bun/controller entries changed. All 303 recorded OMP root names/versions match except the bridge upgrade. No peer-check bypass was used. The [release runbook](../releasing.md#avoid-re-resolving-managed-package-roots) now requires full backups and avoids re-resolving shared roots for identical-dependency releases.
+
+## 0.4.1
 
 On 2026-09-30, `@ramarivera/pi-claude-cli@0.4.1` was published through npm trusted publishing and installed into the managed Pi and OMP environments on workbench. Both hosts discovered their native entrypoints from the installed package. No source provider entrypoint or inference double was supplied to these checks.
 

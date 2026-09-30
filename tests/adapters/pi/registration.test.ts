@@ -272,6 +272,7 @@ describe("current Pi provider registration", () => {
     expect(response).toHaveBeenCalledExactlyOnceWith({
       status: 0,
       headers: {
+        "x-pi-claude-call-scope": "session",
         "x-pi-claude-driver": "cli",
         "x-pi-claude-transport": "subprocess",
         "x-pi-claude-cost": "reported-estimate-usd",

@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
@@ -70,11 +71,44 @@ function assertNoSteeringWarning(events, hostKind) {
   );
 }
 
+function systemPromptProof(events) {
+  const provider = events.flatMap((event, index) => {
+    if (
+      event.type !== "system-prompt" ||
+      event.data.stage !== "before_provider_request"
+    )
+      return [];
+    // observer.providerPrompt writes these two records synchronously. Other
+    // managed extensions may issue auxiliary requests through another provider.
+    const input = events[index + 1];
+    return [
+      {
+        prompt: event,
+        bridge:
+          input?.type === "steering-input" &&
+          input.data.callScope !== "auxiliary" &&
+          ["prompt", "tool-results"].includes(input.data.kind),
+      },
+    ];
+  });
+  return {
+    bridgeRequests: provider
+      .filter((event) => event.bridge)
+      .map((event) => event.prompt),
+    auxiliaryRequests: provider.filter((event) => !event.bridge).length,
+  };
+}
+
 function assertSystemPrompt(events) {
+  const proof = systemPromptProof(events);
   for (const stage of ["before_agent_start", "before_provider_request"]) {
-    const prompts = events.filter(
-      (event) => event.type === "system-prompt" && event.data.stage === stage,
-    );
+    const prompts =
+      stage === "before_provider_request"
+        ? proof.bridgeRequests
+        : events.filter(
+            (event) =>
+              event.type === "system-prompt" && event.data.stage === stage,
+          );
     assert.ok(
       prompts.length > 0,
       `Actual ${stage} system prompt wasn't observed`,
@@ -87,6 +121,144 @@ function assertSystemPrompt(events) {
       `Actual ${stage} lost the configured synthetic system prompt`,
     );
   }
+  return {
+    bridgeRequests: proof.bridgeRequests.length,
+    auxiliaryRequests: proof.auxiliaryRequests,
+  };
+}
+
+function errorClassifier(value, stopReason) {
+  const text = typeof value === "string" ? value.slice(0, 65536) : "";
+  if (
+    /^Concurrent (Pi|OMP) provider rounds for one (session|logical agent) aren't supported$/.test(
+      text,
+    )
+  )
+    return "concurrent-session";
+  if (
+    /budget.{0,80}(exceed|maximum|limit)|exceed.{0,80}budget|max_budget_usd/i.test(
+      text,
+    )
+  )
+    return "budget";
+  if (
+    /authenticat|unauthoriz|invalid.{0,20}(api.?key|token)|not logged in|login required/i.test(
+      text,
+    )
+  )
+    return "authentication";
+  if (/rate.?limit|too many requests|\b429\b/i.test(text)) return "rate-limit";
+  if (
+    /context.{0,40}(limit|length|window)|prompt.{0,30}too long|maximum.{0,20}tokens/i.test(
+      text,
+    )
+  )
+    return "context-limit";
+  if (/timed? ?out|timeout/i.test(text)) return "timeout";
+  if (/abort|cancel/i.test(text) || stopReason === "aborted")
+    return "cancellation";
+  if (
+    /transport|broken pipe|econnreset|socket|process.{0,30}(exit|spawn)/i.test(
+      text,
+    )
+  )
+    return "transport";
+  return text ? "unknown" : "none";
+}
+
+function assistantDiagnostics(messages, boundaryStart = messages.length) {
+  const errors = messages.flatMap((message, index) => {
+    if (
+      message.role !== "assistant" ||
+      !["error", "aborted"].includes(message.stopReason)
+    )
+      return [];
+    return [
+      {
+        phase: index < boundaryStart ? "greeting" : "boundary",
+        providerScope:
+          message.provider === "pi-claude-cli" &&
+          message.model === boundaryModel
+            ? "main"
+            : typeof message.provider === "string" &&
+                typeof message.model === "string"
+              ? "other"
+              : "unattributed",
+        stopReason: message.stopReason,
+        classifier: errorClassifier(message.errorMessage, message.stopReason),
+        errorPresent:
+          typeof message.errorMessage === "string" &&
+          message.errorMessage.length > 0,
+        errorLength:
+          typeof message.errorMessage === "string"
+            ? Math.min(message.errorMessage.length, 65536)
+            : 0,
+      },
+    ];
+  });
+  return {
+    errorCount: errors.length,
+    errors: errors.slice(0, 32),
+    truncated: errors.length > 32,
+  };
+}
+
+const mcpDiscoveryScript = `
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { initializeWithSettings, loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
+import { cfgDisabledExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/settings";
+try {
+  const {cwd, agentDir, configFile} = await Bun.stdin.json();
+  const settings = await Settings.loadReadOnly({cwd, agentDir, configFiles:[configFile]});
+  const release = initializeWithSettings(settings);
+  try {
+    const result = await loadCapability("mcps", {cwd, agentDir, filter: server => server._source.level !== "project"});
+    const names = [...new Set(result.items.map(server => server.name))].sort();
+    const disabledExtensions = cfgDisabledExtensions.get(settings);
+    if (names.length > 128 || names.some(name => typeof name !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(name))) throw new Error("Invalid MCP IDs");
+    process.stdout.write(JSON.stringify({names, disabledExtensions, warningCount:result.warnings.length}));
+  } finally { release(); }
+} catch { process.stdout.write(JSON.stringify({failed:true})); process.exitCode=1; }
+`;
+
+function isolateOmpMcp(sandbox, env) {
+  const configFile = join(sandbox, "host-isolation.yml");
+  // Capability discovery only reads config; it never connects to a server or
+  // imports extension factories. The actual host still discovers installed
+  // packages and all managed extensions, including Remnic.
+  const discovered = spawnSync("bun", ["-e", mcpDiscoveryScript], {
+    cwd: ROOT,
+    env,
+    input: JSON.stringify({
+      cwd: sandbox,
+      agentDir: env.PI_CODING_AGENT_DIR,
+      configFile,
+    }),
+    encoding: "utf8",
+    timeout: 15000,
+    maxBuffer: 65536,
+  });
+  assert.equal(discovered.status, 0, "Read-only native MCP discovery failed");
+  const result = JSON.parse(discovered.stdout);
+  const serverIds = result.names.map((name) => `mcp:${name}`);
+  const disabledExtensions = [
+    ...new Set([...result.disabledExtensions, ...serverIds]),
+  ];
+  writeFileSync(
+    configFile,
+    JSON.stringify({
+      disabledProviders: ["claude", "claude-plugins"],
+      disabledExtensions,
+      mcp: { enableProjectConfig: false },
+    }) + "\n",
+    { mode: 0o600 },
+  );
+  return {
+    serverIds,
+    warningCount: result.warningCount,
+    configScope: "owned-session-overlay",
+    managedExtensionsPreserved: true,
+  };
 }
 
 function steeringConsumption(events) {
@@ -130,13 +302,196 @@ function nativeOutputProof(events) {
   };
 }
 
+function managedPiHelperCommand(name, executable, argv, root) {
+  const broker = join(root, "pi-intercom/broker/broker.ts");
+  const cli = join(root, "tsx/dist/cli.mjs");
+  const preflight = join(root, "tsx/dist/preflight.cjs");
+  const loader = pathToFileURL(join(root, "tsx/dist/loader.mjs")).href;
+  const node = name === "node-MainThread" && /\/node(?:js)?$/.test(executable);
+  if (node && argv.length === 3 && argv[1] === cli && argv[2] === broker)
+    return "pi-intercom";
+  if (
+    node &&
+    argv.length === 6 &&
+    argv[1] === "--require" &&
+    argv[2] === preflight &&
+    ["--import", "--loader"].includes(argv[3]) &&
+    argv[4] === loader &&
+    argv[5] === broker
+  )
+    return "pi-intercom";
+  const compiler = join(root, "@esbuild/linux-x64/bin/esbuild");
+  if (
+    name === "esbuild" &&
+    executable === compiler &&
+    argv.length === 3 &&
+    argv[0] === compiler &&
+    /^--service=\d+\.\d+\.\d+$/.test(argv[1]) &&
+    argv[2] === "--ping"
+  )
+    return "intercom-compiler";
+}
+
+function managedPiHelper(process) {
+  if (!["node-MainThread", "esbuild"].includes(process.name)) return;
+  try {
+    const argv = readFileSync(`/proc/${process.pid}/cmdline`, "utf8")
+      .split("\0")
+      .filter(Boolean);
+    const executable = realpathSync(`/proc/${process.pid}/exe`);
+    const stat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    if (stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] !== process.start)
+      return;
+    const root = join(homedir(), ".pi/agent/npm/node_modules");
+    return managedPiHelperCommand(process.name, executable, argv, root);
+  } catch {
+    /* A process can exit before classification; unknown children stay strict. */
+  }
+}
+
+function nativeHelperCleanup(
+  cleanup,
+  baseline,
+  hostPid,
+  baselineProcesses,
+  allowIntercom = false,
+) {
+  const observed = new Map(
+    cleanup.observedProcesses.map((process) => [process.pid, process]),
+  );
+  const original = new Map(
+    baselineProcesses.map((process) => [process.pid, process]),
+  );
+  const helpers = [],
+    rejected = [];
+  for (const pid of cleanup.forcedChildren) {
+    const process = observed.get(pid);
+    const before = original.get(pid);
+    let reason;
+    const ancestors = [];
+    const postBaselineIntercom =
+      !baseline.has(pid) &&
+      allowIntercom &&
+      ["pi-intercom", "intercom-compiler"].includes(before?.helperOwner) &&
+      process?.helperOwner === before.helperOwner;
+    if (!baseline.has(pid) && !postBaselineIntercom)
+      reason = "after-inference-baseline";
+    else if (!process || !before) reason = "missing-process-evidence";
+    else if (
+      !["node-MainThread", "esbuild"].includes(process.name) ||
+      process.name !== before.name
+    )
+      reason = "unknown-helper-name";
+    else if (process.start !== before.start)
+      reason = "changed-process-identity";
+    else {
+      // The initial ancestry is captured before any inference. Require a full
+      // chain to the owned host, then check current recorded ancestry too.
+      for (const graph of [original, observed]) {
+        const visited = new Set();
+        let cursor = pid;
+        let brokerSeen = false;
+        while (cursor !== hostPid) {
+          if (visited.has(cursor) || visited.size >= 32) {
+            reason = "unbounded-or-cyclic-ancestry";
+            break;
+          }
+          visited.add(cursor);
+          const ancestor = graph.get(cursor);
+          if (!ancestor) {
+            reason = "unknown-ancestry";
+            break;
+          }
+          if (/claude/i.test(ancestor.name)) {
+            reason = "claude-transport-ancestry";
+            break;
+          }
+          if (postBaselineIntercom) {
+            const anchor = original.get(cursor),
+              current = observed.get(cursor);
+            if (
+              !anchor ||
+              !current ||
+              anchor.start !== current.start ||
+              anchor.name !== current.name ||
+              anchor.helperOwner !== current.helperOwner
+            ) {
+              reason = "changed-ancestor-identity";
+              break;
+            }
+            if (current.parent !== anchor.parent && current.parent !== 1) {
+              reason = "changed-ancestor-parent";
+              break;
+            }
+            if (
+              !["pi-intercom", "intercom-compiler"].includes(
+                ancestor.helperOwner,
+              )
+            ) {
+              reason = "unverified-intercom-ancestry";
+              break;
+            }
+            brokerSeen ||= ancestor.helperOwner === "pi-intercom";
+          }
+          if (graph === original) ancestors.push(cursor);
+          // A host exit can reparent a proven startup helper to Linux init.
+          if (graph === observed && ancestor.parent === 1) break;
+          cursor = ancestor.parent;
+        }
+        if (
+          !reason &&
+          postBaselineIntercom &&
+          graph === original &&
+          !brokerSeen
+        )
+          reason = "missing-intercom-broker";
+        if (reason) break;
+      }
+      if (!reason && postBaselineIntercom) {
+        const anchor = original.get(hostPid),
+          current = observed.get(hostPid);
+        if (
+          !anchor ||
+          !current ||
+          anchor.start !== current.start ||
+          anchor.name !== current.name
+        )
+          reason = "changed-host-identity";
+      }
+    }
+    if (reason) rejected.push({ pid, reason });
+    else
+      helpers.push({
+        pid,
+        name: process.name,
+        parent: before.parent,
+        start: process.start,
+        ancestors,
+        ...(postBaselineIntercom ? { helperOwner: before.helperOwner } : {}),
+      });
+  }
+  return {
+    allowedHelperCount: helpers.length,
+    allowedHelpers: helpers.slice(0, 32),
+    rejectedCount: rejected.length,
+    rejectedChildren: rejected.slice(0, 32),
+  };
+}
+
 function responseIds(events, driver) {
-  const responses = events.filter((event) => event.type === "response");
+  const responses = events.filter(
+    (event) =>
+      event.type === "response" && event.data.callScope !== "auxiliary",
+  );
   assert.ok(
     responses.length > 0,
     "Actual provider response observation missing",
   );
   return responses.map(({ data }) => {
+    assert.ok(
+      data.callScope === undefined || data.callScope === "session",
+      "Provider response has unknown ownership",
+    );
     assert.equal(
       data.driver,
       driver,
@@ -828,6 +1183,451 @@ test("installed Pi flag restoration preserves other settings and concurrent flag
   );
 });
 
+test("system prompt proof ignores auxiliary provider calls but rejects every missing bridge marker", () => {
+  const prompt = (stage, included = true) => ({
+    type: "system-prompt",
+    data: {
+      stage,
+      available: true,
+      markerConfigured: true,
+      markerIncluded: included,
+    },
+  });
+  const input = (kind) => ({ type: "steering-input", data: { kind } });
+  const main = [
+    prompt("before_agent_start"),
+    prompt("before_provider_request"),
+    input("prompt"),
+  ];
+  const auxiliary = [
+    {
+      type: "system-prompt",
+      data: {
+        stage: "before_provider_request",
+        available: false,
+        markerConfigured: true,
+        markerIncluded: false,
+      },
+    },
+    input("unknown"),
+  ];
+  assert.deepEqual(assertSystemPrompt([...main, ...auxiliary]), {
+    bridgeRequests: 1,
+    auxiliaryRequests: 1,
+  });
+  const scopedAuxiliary = [
+    prompt("before_provider_request", false),
+    {
+      ...input("prompt"),
+      data: { ...input("prompt").data, callScope: "auxiliary" },
+    },
+  ];
+  assert.deepEqual(assertSystemPrompt([...main, ...scopedAuxiliary]), {
+    bridgeRequests: 1,
+    auxiliaryRequests: 1,
+  });
+  assert.deepEqual(
+    responseIds(
+      [
+        {
+          type: "response",
+          data: {
+            driver: "sdk",
+            callScope: "auxiliary",
+            claudeSessionId: "other",
+          },
+        },
+        {
+          type: "response",
+          data: {
+            driver: "cli",
+            callScope: "session",
+            claudeSessionId: "main",
+          },
+        },
+      ],
+      "cli",
+    ),
+    ["main"],
+  );
+  assert.throws(
+    () =>
+      responseIds(
+        [
+          {
+            type: "response",
+            data: {
+              driver: "cli",
+              callScope: "unknown",
+              claudeSessionId: "main",
+            },
+          },
+        ],
+        "cli",
+      ),
+    /unknown ownership/,
+  );
+  assert.throws(
+    () =>
+      assertSystemPrompt([
+        ...main,
+        prompt("before_provider_request", false),
+        input("tool-results"),
+        ...auxiliary,
+      ]),
+    /lost the configured/,
+  );
+  assert.throws(
+    () => assertSystemPrompt([prompt("before_agent_start"), ...auxiliary]),
+    /wasn't observed/,
+  );
+});
+
+test("assistant error evidence classifies all history errors without raw text or provider credentials", () => {
+  assert.equal(
+    errorClassifier(
+      "Concurrent OMP provider rounds for one logical agent aren't supported",
+    ),
+    "concurrent-session",
+  );
+  assert.equal(
+    errorClassifier(
+      "Concurrent Pi provider rounds for one session aren't supported",
+    ),
+    "concurrent-session",
+  );
+  const secret = "secret-token-unrelated";
+  const messages = [
+    {
+      role: "assistant",
+      provider: "pi-claude-cli",
+      model: boundaryModel,
+      stopReason: "error",
+      errorMessage: `Budget exceeded ${secret}`,
+    },
+    { role: "user", content: [{ type: "text", text: secret }] },
+    {
+      role: "assistant",
+      provider: secret,
+      model: secret,
+      stopReason: "error",
+      errorMessage: `Authentication failed ${secret}`,
+    },
+    { role: "assistant", stopReason: "aborted" },
+  ];
+  assert.deepEqual(assistantDiagnostics(messages, 2), {
+    errorCount: 3,
+    truncated: false,
+    errors: [
+      {
+        phase: "greeting",
+        providerScope: "main",
+        stopReason: "error",
+        classifier: "budget",
+        errorPresent: true,
+        errorLength: messages[0].errorMessage.length,
+      },
+      {
+        phase: "boundary",
+        providerScope: "other",
+        stopReason: "error",
+        classifier: "authentication",
+        errorPresent: true,
+        errorLength: messages[2].errorMessage.length,
+      },
+      {
+        phase: "boundary",
+        providerScope: "unattributed",
+        stopReason: "aborted",
+        classifier: "cancellation",
+        errorPresent: false,
+        errorLength: 0,
+      },
+    ],
+  });
+  assert.equal(
+    JSON.stringify(assistantDiagnostics(messages, 2)).includes(secret),
+    false,
+  );
+  assert.equal(
+    errorClassifier("Timed out waiting for natural Claude child cleanup"),
+    "timeout",
+  );
+  assert.equal(errorClassifier(`Failure ${secret}`), "unknown");
+  assert.equal(
+    assistantDiagnostics(Array(40).fill(messages[0])).errors.length,
+    32,
+  );
+  assert.equal(
+    assistantDiagnostics(Array(40).fill(messages[0])).truncated,
+    true,
+  );
+});
+
+test("native per-server MCP isolation preserves managed extensions and never starts configured commands", () => {
+  const sandbox = scratchDirectory("m-");
+  try {
+    const agentDir = join(sandbox, "agent");
+    mkdirSync(agentDir);
+    const poison = join(sandbox, "command-must-not-run");
+    writeFileSync(
+      join(agentDir, "config.yml"),
+      JSON.stringify({
+        disabledExtensions: ["extension-module:keep-disabled"],
+      }),
+    );
+    writeFileSync(
+      join(agentDir, "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          synthetic: {
+            command: "touch",
+            args: [poison],
+            env: { SECRET: "never-persist-this" },
+          },
+        },
+      }),
+    );
+    configureHostIsolation("omp", sandbox);
+    const env = hostEnvironment("omp", "cli", sandbox, "synthetic");
+    env.PI_CODING_AGENT_DIR = agentDir;
+    const proof = isolateOmpMcp(sandbox, env);
+    assert.ok(proof.serverIds.includes("mcp:synthetic"));
+    const config = JSON.parse(
+      readFileSync(join(sandbox, "host-isolation.yml"), "utf8"),
+    );
+    assert.deepEqual(config.disabledProviders, ["claude", "claude-plugins"]);
+    assert.ok(config.disabledExtensions.includes("mcp:synthetic"));
+    assert.ok(
+      config.disabledExtensions.includes("extension-module:keep-disabled"),
+    );
+    assert.equal(
+      config.disabledExtensions.includes("extension-module:dist-bundle"),
+      false,
+    );
+    assert.equal(existsSync(poison), false);
+    assert.equal(JSON.stringify(proof).includes("never-persist-this"), false);
+    const check = spawnSync("bun", ["-e", mcpDiscoveryScript], {
+      cwd: ROOT,
+      env,
+      input: JSON.stringify({
+        cwd: sandbox,
+        agentDir,
+        configFile: join(sandbox, "host-isolation.yml"),
+      }),
+      encoding: "utf8",
+      timeout: 15000,
+    });
+    assert.equal(check.status, 0);
+    assert.deepEqual(JSON.parse(check.stdout).names, []);
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("forced helper cleanup accepts only identified startup helpers outside Claude ancestry", () => {
+  const processes = [
+    { pid: 100, name: "pi", parent: 1, start: "host-start" },
+    { pid: 101, name: "node-MainThread", parent: 100, start: "node-start" },
+    { pid: 102, name: "esbuild", parent: 101, start: "esbuild-start" },
+    { pid: 103, name: "claude", parent: 100, start: "claude-start" },
+    { pid: 104, name: "esbuild", parent: 103, start: "claude-helper-start" },
+    { pid: 105, name: "unknown", parent: 100, start: "unknown-start" },
+    { pid: 106, name: "node-MainThread", parent: 999, start: "orphan-start" },
+  ];
+  const baseline = new Set(processes.map(({ pid }) => pid));
+  const cleanup = { observedProcesses: processes, forcedChildren: [101, 102] };
+  const accepted = nativeHelperCleanup(cleanup, baseline, 100, processes);
+  assert.equal(accepted.allowedHelperCount, 2);
+  assert.equal(accepted.rejectedCount, 0);
+  assert.deepEqual(
+    accepted.allowedHelpers.map(({ ancestors }) => ancestors),
+    [[101], [102, 101]],
+  );
+  const cases = [
+    {
+      pid: 102,
+      baseline: new Set([100, 101]),
+      observed: processes,
+      reason: "after-inference-baseline",
+    },
+    {
+      pid: 104,
+      baseline,
+      observed: processes,
+      reason: "claude-transport-ancestry",
+    },
+    { pid: 103, baseline, observed: processes, reason: "unknown-helper-name" },
+    { pid: 105, baseline, observed: processes, reason: "unknown-helper-name" },
+    { pid: 106, baseline, observed: processes, reason: "unknown-ancestry" },
+    {
+      pid: 102,
+      baseline,
+      observed: processes.filter(({ pid }) => pid !== 102),
+      reason: "missing-process-evidence",
+    },
+    {
+      pid: 102,
+      baseline,
+      observed: processes.map((process) =>
+        process.pid === 102 ? { ...process, start: "reused-pid" } : process,
+      ),
+      reason: "changed-process-identity",
+    },
+    {
+      pid: 102,
+      baseline,
+      observed: processes.map((process) =>
+        process.pid === 102 ? { ...process, parent: 103 } : process,
+      ),
+      reason: "claude-transport-ancestry",
+    },
+  ];
+  for (const example of cases) {
+    const proof = nativeHelperCleanup(
+      { observedProcesses: example.observed, forcedChildren: [example.pid] },
+      example.baseline,
+      100,
+      processes,
+    );
+    assert.equal(proof.allowedHelperCount, 0);
+    assert.deepEqual(proof.rejectedChildren, [
+      { pid: example.pid, reason: example.reason },
+    ]);
+  }
+  assert.equal(
+    nativeHelperCleanup(
+      {
+        observedProcesses: processes.map((process) =>
+          process.pid === 102 ? { ...process, parent: 1 } : process,
+        ),
+        forcedChildren: [102],
+      },
+      baseline,
+      100,
+      processes,
+    ).rejectedCount,
+    0,
+  );
+});
+
+test("managed helper signatures reject scripts that merely carry trusted paths as arguments", () => {
+  const root = "/synthetic/node_modules",
+    broker = join(root, "pi-intercom/broker/broker.ts");
+  const cli = join(root, "tsx/dist/cli.mjs"),
+    preflight = join(root, "tsx/dist/preflight.cjs");
+  const loader = pathToFileURL(join(root, "tsx/dist/loader.mjs")).href;
+  const compiler = join(root, "@esbuild/linux-x64/bin/esbuild");
+  assert.equal(
+    managedPiHelperCommand(
+      "node-MainThread",
+      "/bin/node",
+      ["node", cli, broker],
+      root,
+    ),
+    "pi-intercom",
+  );
+  assert.equal(
+    managedPiHelperCommand(
+      "node-MainThread",
+      "/bin/node",
+      ["node", "--require", preflight, "--import", loader, broker],
+      root,
+    ),
+    "pi-intercom",
+  );
+  assert.equal(
+    managedPiHelperCommand(
+      "esbuild",
+      compiler,
+      [compiler, "--service=0.28.2", "--ping"],
+      root,
+    ),
+    "intercom-compiler",
+  );
+  for (const argv of [
+    ["node", "/other.js", broker, cli],
+    ["node", "--eval", cli, broker],
+    ["node", cli, "/other.ts"],
+    ["node", "--require", preflight, "--import", "file:///other.mjs", broker],
+  ])
+    assert.equal(
+      managedPiHelperCommand("node-MainThread", "/bin/node", argv, root),
+      undefined,
+    );
+  assert.equal(
+    managedPiHelperCommand(
+      "node-MainThread",
+      "/bin/claude",
+      ["node", cli, broker],
+      root,
+    ),
+    undefined,
+  );
+});
+
+test("post-baseline broker allowance requires exact current ancestor identities and a trusted launch chain", () => {
+  const initial = [
+    { pid: 100, name: "pi", parent: 1, start: "host" },
+    {
+      pid: 101,
+      name: "node-MainThread",
+      parent: 100,
+      start: "broker",
+      helperOwner: "pi-intercom",
+    },
+    {
+      pid: 102,
+      name: "esbuild",
+      parent: 101,
+      start: "compiler",
+      helperOwner: "intercom-compiler",
+    },
+  ];
+  const proof = (current) =>
+    nativeHelperCleanup(
+      { observedProcesses: current, forcedChildren: [102] },
+      new Set([100]),
+      100,
+      initial,
+      true,
+    );
+  assert.equal(proof(initial).allowedHelperCount, 1);
+  for (const change of [
+    { start: "reused" },
+    { helperOwner: undefined },
+    { helperOwner: "other" },
+    { name: "claude" },
+    { parent: 999 },
+  ])
+    assert.equal(
+      proof(initial.map((p) => (p.pid === 101 ? { ...p, ...change } : p)))
+        .rejectedCount,
+      1,
+    );
+  assert.equal(
+    proof(
+      initial.map((p) => (p.pid === 100 ? { ...p, start: "reused-host" } : p)),
+    ).rejectedCount,
+    1,
+  );
+  assert.equal(
+    proof(initial.map((p) => (p.pid === 101 ? { ...p, parent: 1 } : p)))
+      .allowedHelperCount,
+    1,
+  );
+  assert.equal(
+    nativeHelperCleanup(
+      { observedProcesses: initial, forcedChildren: [102] },
+      new Set([100]),
+      100,
+      initial,
+      false,
+    ).rejectedCount,
+    1,
+  );
+});
+
 for (const name of CASES) {
   test(
     `actual ${name}: queued boundary steering retains a running native tool and omits false warning`,
@@ -872,6 +1672,9 @@ for (const name of CASES) {
       let failure;
       let savedPiSettings;
       let piSettingsPath;
+      let preInferenceProcesses = [];
+      let failureStage = "setup";
+      let boundaryStart = 0;
       try {
         receipt.socketPathBytes = assertSocketCapacity(sandbox);
         mkdirSync(join(sandbox, "t"));
@@ -916,7 +1719,9 @@ for (const name of CASES) {
               "Managed Pi settings must pin the installed release exactly",
             );
             env.PI_OFFLINE = "1";
+            env.PI_INTERCOM_SCOPE_ID = `pcc-e2e-${randomUUID()}`;
             receipt.packageResolution = { PI_OFFLINE: "1" };
+            receipt.intercomSessionScoped = true;
           } else {
             const manifest = JSON.parse(
               readFileSync(join(installRoot, "package.json"), "utf8"),
@@ -931,6 +1736,8 @@ for (const name of CASES) {
           delete env.PI_CONFIG_DIR;
           receipt.packagePinVerified = true;
         }
+        if (hostKind === "omp")
+          receipt.externalMcpIsolation = isolateOmpMcp(sandbox, env);
         Object.assign(env, {
           PCC_E2E_BOUNDARY: "1",
           PCC_E2E_GATE_RELEASE: release,
@@ -948,6 +1755,9 @@ for (const name of CASES) {
         if (hostKind === "omp") args[args.indexOf("--tools") + 1] = "pcc_gate";
         rpc = new RpcHost(receipt.versions.binary, args, env, sandbox, {
           signal: context.signal,
+          ...(installed && hostKind === "pi"
+            ? { classifyProcess: managedPiHelper, childExitGraceMs: 7000 }
+            : {}),
           deadline,
           ...(installed && hostKind === "pi"
             ? { allowNonJsonOutput: managedPiStartupOutput }
@@ -955,7 +1765,21 @@ for (const name of CASES) {
         });
         const originalState = await select(rpc, hostKind, installed);
         rpc.rememberBaseline();
+        preInferenceProcesses = [...rpc.baseline].flatMap((pid) => {
+          const process = rpc.identities.get(pid);
+          return process
+            ? [
+                {
+                  pid,
+                  name: process.name,
+                  parent: process.parent,
+                  start: process.start,
+                },
+              ]
+            : [];
+        });
 
+        failureStage = "greeting";
         const hello = await rpc.prompt(hostKind, "hello");
         const helloEvents = observations(path);
         assertNoSteeringWarning(helloEvents, hostKind);
@@ -965,11 +1789,18 @@ for (const name of CASES) {
           answerLength: hello.length,
           answerMarkerIncluded: hello.includes(marker),
         };
-        assertSystemPrompt(helloEvents);
+        receipt.phases.hello.systemPrompt = assertSystemPrompt(helloEvents);
         receipt.phases.hello.systemPromptPreserved = true;
         textProof(hello, marker, marker);
+        const helloHistory = await rpc.command("get_messages");
+        boundaryStart = helloHistory.messages.length;
+        receipt.phases.hello.assistantDiagnostics = assistantDiagnostics(
+          helloHistory.messages,
+          boundaryStart,
+        );
         const originalClaudeId = responseIds(observations(path), driver).at(-1);
 
+        failureStage = "boundary-execution";
         const before = rpc.frames.length;
         const promptId = rpc.send("prompt", {
           message:
@@ -1039,6 +1870,10 @@ for (const name of CASES) {
             typeof text === "string" && text.includes(supplementalMarker),
         };
         const { messages } = await rpc.command("get_messages");
+        receipt.assistantDiagnostics = assistantDiagnostics(
+          messages,
+          boundaryStart,
+        );
         const supplementalHistoryCount = messages.filter(
           (message) =>
             message.role === "user" && userText(message) === supplemental,
@@ -1116,7 +1951,7 @@ for (const name of CASES) {
           "Boundary steering restarted the authoritative Claude session",
         );
         const events = observations(path);
-        assertSystemPrompt(events);
+        receipt.phases.systemPrompt = assertSystemPrompt(events);
         assertNoSteeringWarning(events, hostKind);
         assert.equal(
           events.filter((event) => event.type === "gate-start").length,
@@ -1189,16 +2024,67 @@ for (const name of CASES) {
         textProof(text, marker, nonce);
         textProof(text, marker, supplementalMarker);
         receipt.stats = publicStats(await rpc.command("get_session_stats"));
+        failureStage = "transport-cleanup";
         await rpc.command("new_session");
         receipt.phases.transportCleanup = await rpc.transportIdle(
           join(sandbox, "t"),
+          installed && hostKind === "pi"
+            ? {
+                allowOwnedHelper: (pid) =>
+                  nativeHelperCleanup(
+                    {
+                      observedProcesses: [...rpc.identities.values()],
+                      forcedChildren: [pid],
+                    },
+                    rpc.baseline,
+                    rpc.child.pid,
+                    [...rpc.initialIdentities.values()],
+                    true,
+                  ).rejectedCount === 0,
+              }
+            : {},
         );
         receipt.status = "passed";
       } catch (error) {
         failure = error;
         receipt.status = "failed";
         // Assertion diagnostics may contain synthetic prompts; store only the name.
-        receipt.failure = { name: error.name };
+        receipt.failure = {
+          name: error.name,
+          stage: failureStage,
+          classifier: errorClassifier(error.message),
+        };
+        if (rpc && !receipt.assistantDiagnostics)
+          receipt.assistantDiagnostics = assistantDiagnostics(
+            rpc.frames
+              .filter((frame) => frame.type === "message_end")
+              .map((frame) => frame.message)
+              .filter(Boolean),
+            failureStage === "greeting"
+              ? Number.MAX_SAFE_INTEGER
+              : boundaryStart,
+          );
+        if (rpc)
+          receipt.promptDiagnostics = rpc.responses
+            .slice(-8)
+            .map((response) => ({
+              stopReason: [
+                "stop",
+                "length",
+                "toolUse",
+                "error",
+                "aborted",
+              ].includes(response.assistant?.stopReason)
+                ? response.assistant.stopReason
+                : "unknown",
+              classifier: errorClassifier(
+                response.assistant?.errorMessage,
+                response.assistant?.stopReason,
+              ),
+              errorPresent:
+                typeof response.assistant?.errorMessage === "string" &&
+                response.assistant.errorMessage.length > 0,
+            }));
       } finally {
         try {
           if (rpc) {
@@ -1211,10 +2097,19 @@ for (const name of CASES) {
             if (installed && hostKind === "pi")
               receipt.startupOutputCounts = rpc.startupOutputCounts;
             assert.deepEqual(receipt.cleanup.survivors, []);
-            assert.deepEqual(
-              receipt.cleanup.forcedChildren,
-              [],
-              "Claude children required forced harness cleanup",
+            receipt.nativeHelperCleanup = nativeHelperCleanup(
+              receipt.cleanup,
+              rpc.baseline ?? new Set(),
+              rpc.child.pid,
+              installed && hostKind === "pi"
+                ? [...rpc.initialIdentities.values()]
+                : preInferenceProcesses,
+              installed && hostKind === "pi",
+            );
+            assert.equal(
+              receipt.nativeHelperCleanup.rejectedCount,
+              0,
+              "Claude transport or unverified child required forced harness cleanup",
             );
             assert.equal(receipt.cleanup.hostRequiredKill, false);
           }

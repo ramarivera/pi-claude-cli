@@ -4,7 +4,11 @@ import type {
   ExtensionContext,
   ProviderConfig,
 } from "@oh-my-pi/pi-coding-agent";
-import type { Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
+import type {
+  Model,
+  ProviderSessionState,
+  SimpleStreamOptions,
+} from "@oh-my-pi/pi-ai";
 import type {
   ClaudeRoundEvent,
   ClaudeRuntime,
@@ -99,14 +103,30 @@ function setup(
   });
   if (!provider?.streamSimple) throw new Error("Missing provider");
   const stream = provider.streamSimple;
+  let currentId = "host";
   const emit = async (
     name: string,
     ctx: ExtensionContext,
     event: unknown = { type: name },
   ) => {
+    currentId = ctx.sessionManager.getSessionId();
     await handlers.get(name)?.(event, ctx);
   };
-  return { emit, requests, runtime, factory, events, logger, stream };
+  const ownedStream: typeof stream = (
+    model,
+    context,
+    options: SimpleStreamOptions = {},
+  ) => stream(model, context, { sessionId: currentId, ...options });
+  return {
+    emit,
+    requests,
+    runtime,
+    factory,
+    events,
+    logger,
+    stream: ownedStream,
+    rawStream: stream,
+  };
 }
 const prompt = {
   messages: [{ role: "user" as const, content: "hello", timestamp: 0 }],
@@ -116,7 +136,285 @@ const flush = async () => {
 };
 
 describe("native OMP lifecycle", () => {
-  it("preserves the authoritative main host session ID without a routing override", async () => {
+  it("keeps map-owned calls persistent even without an explicit routing ID", async () => {
+    const host = setup();
+    const map = new Map<string, ProviderSessionState>();
+    await host.emit("session_start", context());
+    await host.rawStream(model, prompt, { providerSessionState: map }).result();
+    await host.rawStream(model, prompt, { providerSessionState: map }).result();
+    expect(host.requests.map((request) => request.session.sessionId)).toEqual([
+      "host",
+      "host",
+    ]);
+    expect(host.runtime.close).not.toHaveBeenCalled();
+    expect(map.size).toBe(1);
+  });
+  it("owns a factory that synchronously aborts its native caller", async () => {
+    const host = setup();
+    const controller = new AbortController();
+    host.factory.mockImplementationOnce(async () => {
+      controller.abort();
+      return host.runtime;
+    });
+    await host.emit("session_start", context());
+    expect(
+      (await host.stream(model, prompt, { signal: controller.signal }).result())
+        .stopReason,
+    ).toBe("aborted");
+    await flush();
+    expect(host.requests).toHaveLength(0);
+    expect(host.runtime.closeAll).toHaveBeenCalledOnce();
+  });
+  it("attempts runtime shutdown even after an auxiliary close failure and preserves the failure", async () => {
+    const host = setup();
+    const ctx = context();
+    await host.emit("session_start", ctx);
+    vi.mocked(host.runtime.close).mockRejectedValueOnce(
+      new Error("auxiliary close failed"),
+    );
+    expect((await host.rawStream(model, prompt, {}).result()).stopReason).toBe(
+      "error",
+    );
+    await expect(host.emit("session_shutdown", ctx)).rejects.toThrow(
+      "OMP runtime cleanup failed",
+    );
+    expect(host.runtime.closeAll).toHaveBeenCalledOnce();
+  });
+  it("isolates two unowned calls from an active owned round and closes them independently", async () => {
+    const releases = new Map<string, () => void>();
+    const host = setup(async function* (request) {
+      yield {
+        type: "driver_event",
+        roundId: request.roundId,
+        event: {
+          type: "initialized",
+          claudeSessionId: `claude-${request.session.sessionId}`,
+          model: model.id,
+          runtimeVersion: "test",
+          capabilities: [],
+          tools: [],
+          mcpServers: [],
+          attribution: {},
+          sequence: 1,
+        },
+      };
+      yield {
+        type: "driver_event",
+        roundId: request.roundId,
+        event: {
+          type: "observation",
+          family: "status",
+          subtype: "auxiliary progress",
+          attribution: {},
+          data: {},
+          sequence: 2,
+        },
+      };
+      await new Promise<void>((resolve) => {
+        releases.set(request.session.sessionId, resolve);
+        request.signal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+      yield {
+        type: "round_end",
+        roundId: request.roundId,
+        reason: request.signal?.aborted ? "aborted" : "stop",
+        pendingToolCallIds: [],
+        content: [{ type: "text", text: "done" }],
+      };
+    });
+    const ctx = context();
+    const map = new Map<string, ProviderSessionState>();
+    await host.emit("session_start", ctx);
+    const main = host.stream(model, prompt, { providerSessionState: map });
+    await flush();
+    vi.mocked(ctx.ui.setStatus).mockClear();
+    const firstSignal = new AbortController();
+    const firstResponse = vi.fn();
+    const secondResponse = vi.fn();
+    const first = host.rawStream(model, prompt, {
+      signal: firstSignal.signal,
+      onResponse: firstResponse,
+    });
+    const second = host.rawStream(model, prompt, {
+      onResponse: secondResponse,
+    });
+    await flush();
+    const [mainRequest, firstRequest, secondRequest] = host.requests;
+    expect(
+      new Set(host.requests.map((request) => request.session.sessionId)).size,
+    ).toBe(3);
+    expect(mainRequest.session.sessionId).toBe("host");
+    for (const request of [firstRequest, secondRequest])
+      expect(request.session.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(map.size).toBe(1);
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+    expect(
+      (await host.stream(model, prompt, {}).result()).errorMessage,
+    ).toContain("Concurrent OMP provider rounds");
+    expect(host.runtime.invalidate).not.toHaveBeenCalled();
+    firstSignal.abort();
+    expect((await first.result()).stopReason).toBe("aborted");
+    expect(mainRequest.signal?.aborted).toBe(false);
+    expect(secondRequest.signal?.aborted).toBe(false);
+    expect(host.runtime.invalidate).toHaveBeenCalledExactlyOnceWith(
+      firstRequest.session,
+      "abort",
+    );
+    expect(host.runtime.close).toHaveBeenCalledExactlyOnceWith(
+      firstRequest.session.sessionId,
+    );
+    expect(map.size).toBe(1);
+    releases.get(secondRequest.session.sessionId)!();
+    expect((await second.result()).stopReason).toBe("stop");
+    expect(host.runtime.close).toHaveBeenCalledWith(
+      secondRequest.session.sessionId,
+    );
+    expect(host.runtime.close).not.toHaveBeenCalledWith(
+      mainRequest.session.sessionId,
+    );
+    for (const response of [firstResponse, secondResponse])
+      expect(response.mock.calls[0][0].headers["x-pi-claude-call-scope"]).toBe(
+        "auxiliary",
+      );
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
+    releases.get(mainRequest.session.sessionId)!();
+    expect((await main.result()).stopReason).toBe("stop");
+    await host.emit("session_shutdown", ctx);
+    expect(host.runtime.close).toHaveBeenCalledTimes(3);
+    expect(host.runtime.closeAll).toHaveBeenCalledOnce();
+  });
+  it("closes unowned tool-use and error terminals without retaining native provider state", async () => {
+    const host = setup(async function* (request, index) {
+      if (index === 2) throw new Error("auxiliary failure");
+      yield {
+        type: "round_end",
+        roundId: request.roundId,
+        reason: "toolUse",
+        pendingToolCallIds: ["call"],
+        content: [
+          { type: "tool_call", id: "call", name: "gate", arguments: {} },
+        ],
+      };
+    });
+    const ctx = context();
+    await host.emit("session_start", ctx);
+    expect(
+      (
+        await host
+          .rawStream(
+            model,
+            {
+              ...prompt,
+              tools: [
+                {
+                  name: "gate",
+                  description: "gate",
+                  parameters: { type: "object" },
+                },
+              ],
+            },
+            {},
+          )
+          .result()
+      ).stopReason,
+    ).toBe("toolUse");
+    expect((await host.rawStream(model, prompt, {}).result()).stopReason).toBe(
+      "error",
+    );
+    expect(host.runtime.close).toHaveBeenCalledTimes(2);
+    await host.emit("session_shutdown", ctx);
+    expect(host.runtime.close).toHaveBeenCalledTimes(2);
+  });
+  it("keeps a pending shared factory for the owned round when an auxiliary aborts", async () => {
+    const host = setup();
+    let resolve!: (runtime: ClaudeRuntime) => void;
+    host.factory.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const ctx = context();
+    await host.emit("session_start", ctx);
+    const main = host.stream(model, prompt, {});
+    const controller = new AbortController();
+    const auxiliary = host.rawStream(model, prompt, {
+      signal: controller.signal,
+    });
+    await flush();
+    controller.abort();
+    expect((await auxiliary.result()).stopReason).toBe("aborted");
+    expect(host.runtime.closeAll).not.toHaveBeenCalled();
+    resolve(host.runtime);
+    expect((await main.result()).stopReason).toBe("stop");
+    expect(host.requests).toHaveLength(1);
+    expect(host.requests[0].session.sessionId).toBe("host");
+    expect(host.runtime.closeAll).not.toHaveBeenCalled();
+    await host.emit("session_shutdown", ctx);
+  });
+  it("owns a late factory result after the sole auxiliary aborts without blocking cancellation", async () => {
+    const host = setup();
+    let resolve!: (runtime: ClaudeRuntime) => void;
+    host.factory.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const ctx = context();
+    await host.emit("session_start", ctx);
+    const controller = new AbortController();
+    const auxiliary = host.rawStream(model, prompt, {
+      signal: controller.signal,
+    });
+    await flush();
+    controller.abort();
+    expect((await auxiliary.result()).stopReason).toBe("aborted");
+    await host.emit("session_shutdown", ctx);
+    resolve(host.runtime);
+    await flush();
+    expect(host.requests).toHaveLength(0);
+    expect(host.runtime.closeAll).toHaveBeenCalledOnce();
+  });
+  it("reports abort cleanup failures through native logger and notifications", async () => {
+    const host = setup(async function* (request) {
+      await new Promise<void>((resolve) =>
+        request.signal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        }),
+      );
+      yield {
+        type: "round_end",
+        roundId: request.roundId,
+        reason: "aborted",
+        pendingToolCallIds: [],
+        content: [],
+      };
+    });
+    const ctx = context();
+    await host.emit("session_start", ctx);
+    const controller = new AbortController();
+    const main = host.stream(model, prompt, { signal: controller.signal });
+    await flush();
+    vi.mocked(host.runtime.invalidate).mockRejectedValueOnce(
+      new Error("abort cleanup failed\n"),
+    );
+    controller.abort();
+    await main.result();
+    await flush();
+    expect(host.logger.error).toHaveBeenCalledWith(
+      "Claude cleanup failed: abort cleanup failed ",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "Claude cleanup failed: abort cleanup failed ",
+      "error",
+    );
+    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith(
+      "pi-claude-cli-cleanup",
+      expect.anything(),
+    );
+  });
+  it("preserves the authoritative main host session ID with native ownership", async () => {
     const host = setup();
     await host.emit("session_start", context("native-session"));
     await host.stream(model, prompt, {}).result();
@@ -351,7 +649,7 @@ describe("native OMP lifecycle", () => {
     });
     const lifecycle = new OmpLifecycle(async () => host.runtime);
     lifecycle.capture(ctx);
-    const state = lifecycle.session({});
+    const state = lifecycle.session({ sessionId: "host" });
     Object.assign(state.identity, { raw: "never" });
     const api = { events: host.events } as unknown as ExtensionAPI;
     lifecycle.observe(api, state, {
@@ -371,6 +669,7 @@ describe("native OMP lifecycle", () => {
     expect(host.events.emit).toHaveBeenCalledOnce();
     expect(host.events.emit).toHaveBeenCalledWith("pi-claude-cli:diagnostic", {
       owner: "claude",
+      callScope: "session",
       hostSession: {
         sessionId: "host",
         branchId: "root",

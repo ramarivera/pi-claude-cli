@@ -22,11 +22,15 @@ vi.mock("@oh-my-pi/pi-ai", async () => {
   const native = await import("@oh-my-pi/pi-ai/utils/event-stream");
   return {
     createAssistantMessageEventStream: native.createAssistantMessageEventStream,
+    getBundledModels: () => [],
   };
 });
+vi.mock("@oh-my-pi/pi-coding-agent", () => ({ VERSION: "18.4.4" }));
 import { OmpLifecycle } from "../../../src/adapters/omp/lifecycle.js";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 import { projectRound } from "../../../src/adapters/omp/stream.js";
+import { registerOmpAdapter } from "../../../src/adapters/omp/index.js";
 
 const model = {
   id: "claude-haiku-4-5",
@@ -53,10 +57,31 @@ const call: HostToolCall = {
   name: "edit",
   arguments: { input: "12:AB|replacement" },
 };
-function scriptedDriver(emptyText: boolean) {
+function scriptedDriver(
+  emptyText: boolean,
+  behavior: "gate" | "wait" | "stop" = "gate",
+) {
   const opened: DriverSessionRequest[] = [],
     results: HostToolResult[] = [];
   const submitPrompt = vi.fn(async () => {
+    if (behavior === "wait") return;
+    if (behavior === "stop") {
+      emit({
+        type: "assistant_snapshot",
+        messageId: "aux",
+        content: [{ type: "text", text: "auxiliary done" }],
+        attribution: {},
+      });
+      emit({ type: "message_end", messageId: "aux", attribution: {} });
+      emit({
+        type: "turn_end",
+        status: "success",
+        subtype: "success",
+        isError: false,
+        attribution: {},
+      });
+      return;
+    }
     emit({ type: "message_start", messageId: "m1", attribution: {} });
     emit({
       type: "content_start",
@@ -171,6 +196,121 @@ function request(context: Context): HostRoundRequest {
 }
 
 describe("OMP projection through the actual shared runtime", () => {
+  it("preserves a parked main tool request while disposable provider calls complete and abort", async () => {
+    const sessions: ReturnType<typeof scriptedDriver>[] = [];
+    const base = scriptedDriver(false);
+    const runtime = createClaudeRuntime({
+      driver: {
+        ...base.driver,
+        async openSession(request) {
+          const scripted = scriptedDriver(
+            false,
+            sessions.length === 0
+              ? "gate"
+              : sessions.length === 1
+                ? "wait"
+                : "stop",
+          );
+          sessions.push(scripted);
+          return scripted.driver.openSession(request);
+        },
+      },
+    });
+    const handlers = new Map<
+      string,
+      (event: unknown, ctx: ExtensionContext) => unknown
+    >();
+    let provider: ProviderConfig | undefined;
+    const ctx = {
+      cwd: "/project",
+      agent: { kind: "main", id: "Main", name: "main", depth: 0 },
+      sessionManager: { getSessionId: () => "host" },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+      setTimeout: (callback: () => void, milliseconds: number) =>
+        setTimeout(callback, milliseconds),
+      clearTimer: (timer: NodeJS.Timeout) => clearTimeout(timer),
+    } as unknown as ExtensionContext;
+    registerOmpAdapter(
+      {
+        on: (
+          name: string,
+          handler: (event: unknown, ctx: ExtensionContext) => unknown,
+        ) => handlers.set(name, handler),
+        registerProvider: (_name: string, config: ProviderConfig) => {
+          provider = config;
+        },
+        events: { emit: vi.fn() },
+        logger: { error: vi.fn() },
+      } as unknown as ExtensionAPI,
+      { configuration, runtimeFactory: async () => runtime },
+    );
+    await handlers.get("session_start")!({ type: "session_start" }, ctx);
+    if (!provider?.streamSimple) throw new Error("Missing provider");
+    const stream = provider.streamSimple;
+    const transcript: Context = {
+      tools,
+      messages: [{ role: "user", content: "edit", timestamp: 0 }],
+    };
+    try {
+      const first = await stream(model, transcript, {
+        sessionId: "host",
+      }).result();
+      expect(first.stopReason).toBe("toolUse");
+      const controller = new AbortController();
+      const cancelled = stream(
+        model,
+        { messages: transcript.messages },
+        { signal: controller.signal },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const completed = await stream(
+        model,
+        { messages: transcript.messages },
+        {},
+      ).result();
+      expect(completed.stopReason).toBe("stop");
+      controller.abort("auxiliary cancelled");
+      expect((await cancelled.result()).stopReason).toBe("aborted");
+      expect(sessions).toHaveLength(3);
+      expect(
+        new Set(
+          sessions.flatMap((session) =>
+            session.opened.map((opened) => opened.identity.sessionId),
+          ),
+        ).size,
+      ).toBe(3);
+      expect(sessions[0].query.close).not.toHaveBeenCalled();
+      expect(sessions[0].query.interrupt).not.toHaveBeenCalled();
+      expect(sessions[1].query.close).toHaveBeenCalledOnce();
+      expect(sessions[2].query.close).toHaveBeenCalledOnce();
+      transcript.messages.push(first, {
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: "changed" }],
+        isError: false,
+        timestamp: 1,
+      });
+      const final = await stream(model, transcript, {
+        sessionId: "host",
+      }).result();
+      expect(final.content).toEqual([
+        { type: "text", text: "result consumed" },
+      ]);
+      expect(sessions).toHaveLength(3);
+      expect(sessions[0].submitPrompt).toHaveBeenCalledOnce();
+      expect(sessions[0].results).toMatchObject([
+        { toolCallId: call.id, content: [{ type: "text", text: "changed" }] },
+      ]);
+      await handlers.get("session_shutdown")!(
+        { type: "session_shutdown" },
+        ctx,
+      );
+      expect(sessions[0].query.close).toHaveBeenCalledOnce();
+    } finally {
+      await runtime.closeAll();
+    }
+  });
   it("keeps Claude block order and resident tool-result handoff when MCP parking arrives late", async () => {
     const scripted = scriptedDriver(false);
     const runtime = createClaudeRuntime({ driver: scripted.driver });
@@ -295,7 +435,7 @@ describe("OMP projection through the actual shared runtime", () => {
       sessionManager: { getSessionId: () => "host" },
       ui: { setStatus: vi.fn() },
     } as unknown as ExtensionContext);
-    const state = lifecycle.session({});
+    const state = lifecycle.session({ sessionId: "host" });
     const controller = new AbortController();
     const round = {
       ...request({

@@ -27,6 +27,15 @@ export function response(
     driver: headers["x-pi-claude-driver"],
     claudeSessionId: headers["x-pi-claude-session-id"],
     transport: headers["x-pi-claude-transport"],
+    ...(headers["x-pi-claude-call-scope"]
+      ? {
+          callScope: ["session", "auxiliary"].includes(
+            headers["x-pi-claude-call-scope"],
+          )
+            ? headers["x-pi-claude-call-scope"]
+            : "unknown",
+        }
+      : {}),
   });
 }
 
@@ -50,7 +59,7 @@ export function systemPrompt(stage: string, value: unknown): void {
   });
 }
 
-export function providerPrompt(payload: unknown): void {
+export function providerPrompt(payload: unknown, hostSessionId?: string): void {
   const prompt =
     typeof payload === "object" && payload !== null && "systemPrompt" in payload
       ? payload.systemPrompt
@@ -58,6 +67,13 @@ export function providerPrompt(payload: unknown): void {
   systemPrompt("before_provider_request", prompt);
   if (process.env.PCC_E2E_BOUNDARY === "1") {
     const input = object(object(payload).input);
+    const requestSessionId = object(object(payload).session).sessionId;
+    const callScope =
+      hostSessionId && typeof requestSessionId === "string"
+        ? requestSessionId === hostSessionId
+          ? "session"
+          : "auxiliary"
+        : undefined;
     const marker = process.env.PCC_E2E_STEER_MARKER;
     const steering = Array.isArray(input.steering) ? input.steering : [];
     const texts = steering.slice(0, 32).flatMap((block) => {
@@ -68,6 +84,7 @@ export function providerPrompt(payload: unknown): void {
     });
     const length = texts.reduce((total, text) => total + text.length, 0);
     record("steering-input", {
+      ...(callScope ? { callScope } : {}),
       kind:
         input.kind === "prompt" || input.kind === "tool-results"
           ? input.kind

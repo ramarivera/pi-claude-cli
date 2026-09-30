@@ -1,6 +1,6 @@
 {
   "name": "@ramarivera/pi-claude-cli",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Pi and Oh My Pi extension with a shared Claude core and selectable CLI or official Agent SDK transport",
   "main": "index.ts",
   "keywords": [

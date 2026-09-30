@@ -28,7 +28,7 @@ Authenticated tests consume account resources and remain opt-in. Existing live r
 If pushing a tag doesn't start Actions, dispatch the workflow from `main` with the existing release tag (substitute the version being released):
 
 ```nu
-gh workflow run publish.yml --ref main --field tag=v0.4.2
+gh workflow run publish.yml --ref main --field tag=v0.4.3
 ```
 
 The workflow resolves the tag to an immutable commit and runs the release gates against it. Publication uses the workflow's actual GitHub source commit for provenance and requires its tarball to be byte-for-byte identical to the tag's tarball. A difference in any packaged file blocks publication. Don't override `GITHUB_REF` or `GITHUB_SHA`: npm checks those values against the signing certificate's source identity.
@@ -61,3 +61,9 @@ If Actions publishing cannot be used, authenticate interactively with `npm login
 - `home/.chezmoidata/pi-models.yaml`: shared model aliases and their OMP routing, keeping gateway routing separate.
 
 Modify the source templates/data rather than deployed settings, preserve unrelated source changes, and apply only the affected targets. Verify the actual installed version, enabled state and native tool execution before reporting deployment complete.
+
+### Avoid re-resolving managed package roots
+
+Back up the complete installed tree and all package/controller locks before materialization. An ordinary `npm install --prefix` can resolve optional host peers and update unrelated transitive packages, even when the requested extension is the only direct dependency that changes. Don't use `--force` or ignore peer conflicts to install into a shared host root.
+
+For a release with identical production dependencies, fetch its official registry tarball, verify its SHA-512 against registry metadata and the release artifact, and replace only the named extension directory. Preserve its existing nested dependencies, update only its entries in the host's canonical package/controller locks, and compare every other installed package version to the pre-install snapshot. A release with changed dependencies needs a separately reviewed host installation plan. Verify both the actual package and managed settings after materialization; a settings pin alone doesn't install it.

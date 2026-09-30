@@ -307,6 +307,7 @@ export class RpcHost {
   commands = [];
   tracked = new Map();
   identities = new Map();
+  initialIdentities = new Map();
   serial = 0;
   closed = false;
   parseError;
@@ -316,10 +317,24 @@ export class RpcHost {
     args,
     env,
     cwd,
-    { signal, deadline = Infinity, allowNonJsonOutput } = {},
+    {
+      signal,
+      deadline = Infinity,
+      allowNonJsonOutput,
+      classifyProcess,
+      childExitGraceMs = 0,
+    } = {},
   ) {
     this.signal = signal;
     this.deadline = deadline;
+    this.classifyProcess = classifyProcess;
+    assert.ok(
+      Number.isSafeInteger(childExitGraceMs) &&
+        childExitGraceMs >= 0 &&
+        childExitGraceMs <= 10000,
+      "Invalid child exit grace",
+    );
+    this.childExitGraceMs = childExitGraceMs;
     this.child = spawn(binary, args, {
       env,
       cwd,
@@ -381,15 +396,51 @@ export class RpcHost {
     }
     for (const pid of owned)
       if (snapshot.has(pid)) {
-        this.tracked.set(pid, snapshot.get(pid).start);
-        this.identities.set(pid, { pid, ...snapshot.get(pid) });
+        const stat = snapshot.get(pid);
+        const previous = this.identities.get(pid);
+        const classified = this.classifyProcess?.({ pid, ...stat });
+        if (this.classifyProcess) {
+          // Bracket argv/executable inspection with an identity check. A PID
+          // reused or reparented during classification can't inherit its proof.
+          try {
+            const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+            const fields = raw.slice(raw.lastIndexOf(")") + 2).split(" ");
+            if (
+              fields[19] !== stat.start ||
+              Number(fields[1]) !== stat.parent ||
+              raw.slice(raw.indexOf("(") + 1, raw.lastIndexOf(")")) !==
+                stat.name
+            )
+              continue;
+          } catch {
+            continue;
+          }
+        }
+        const helperOwner =
+          classified ??
+          (stat.state === "Z" && previous?.start === stat.start
+            ? previous.helperOwner
+            : undefined);
+        const identity = {
+          pid,
+          ...stat,
+          ...(helperOwner ? { helperOwner } : {}),
+        };
+        this.tracked.set(pid, stat.start);
+        this.identities.set(pid, identity);
+        const initial = this.initialIdentities.get(pid);
+        if (!initial || initial.start !== stat.start)
+          this.initialIdentities.set(pid, identity);
+        else if (helperOwner && !initial.helperOwner)
+          this.initialIdentities.set(pid, { ...initial, helperOwner });
       }
   }
   rememberBaseline() {
     this.track();
     this.baseline = new Set(this.tracked.keys());
   }
-  async transportIdle(temp) {
+  async transportIdle(temp, { allowOwnedHelper } = {}) {
+    let excludedNativeHelpers = 0;
     await this.wait(
       () => {
         this.track();
@@ -404,7 +455,11 @@ export class RpcHost {
         const files = readdirSync(temp).filter((name) =>
           name.startsWith("pcc-cli-"),
         );
-        return alive.length === 0 && files.length === 0;
+        const allowed = alive.filter(
+          ([pid]) => allowOwnedHelper?.(pid) === true,
+        );
+        excludedNativeHelpers = allowed.length;
+        return alive.length === allowed.length && files.length === 0;
       },
       "natural Claude child and private MCP cleanup",
       10000,
@@ -414,6 +469,7 @@ export class RpcHost {
       privateFiles: [],
       hostAlive: !this.closed,
       forced: false,
+      ...(excludedNativeHelpers ? { excludedNativeHelpers } : {}),
     };
   }
   async wait(predicate, description, timeout = 20000) {
@@ -594,6 +650,15 @@ export class RpcHost {
           if (pid !== this.child.pid) forcedChildren.add(pid);
         signal(-this.child.pid, "SIGKILL");
       }
+      // Some managed host extensions own a daemon with a bounded idle exit.
+      // Give it its native grace; any survivor still enters strict cleanup below.
+      if (!hostRequiredKill)
+        for (
+          let n = 0;
+          remaining().length && n * 50 < this.childExitGraceMs;
+          n++
+        )
+          await delay(50);
       for (const pid of remaining()) {
         if (pid !== this.child.pid) forcedChildren.add(pid);
         try {

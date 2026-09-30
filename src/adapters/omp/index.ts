@@ -116,7 +116,7 @@ export function registerOmpAdapter(
             request.signal,
           );
           const ownedRuntime = await withSignal(
-            lifecycle.runtime(),
+            lifecycle.runtime(state),
             request.signal,
           );
           if (
@@ -131,7 +131,24 @@ export function registerOmpAdapter(
           const source = projectRound(
             model,
             replacePayload(request, replacement),
-            { ...streamOptions, signal: request.signal },
+            {
+              ...streamOptions,
+              signal: request.signal,
+              onResponse: (response, responseModel, signal) =>
+                streamOptions.onResponse?.(
+                  {
+                    ...response,
+                    headers: {
+                      ...response.headers,
+                      "x-pi-claude-call-scope": activeState.disposable
+                        ? "auxiliary"
+                        : "session",
+                    },
+                  },
+                  responseModel,
+                  signal,
+                ),
+            },
             ownedRuntime,
             {
               driver: configuration.driver,
@@ -152,10 +169,11 @@ export function registerOmpAdapter(
                 activeState.parked = reason === "toolUse";
                 if (!activeState.parked) {
                   lifecycle.detach(activeState);
-                  activeState.context.ui.setStatus(
-                    "pi-claude-cli-progress",
-                    undefined,
-                  );
+                  if (!activeState.disposable)
+                    activeState.context.ui.setStatus(
+                      "pi-claude-cli-progress",
+                      undefined,
+                    );
                 }
                 if (
                   (reason === "error" || reason === "aborted") &&
@@ -165,6 +183,8 @@ export function registerOmpAdapter(
                     activeState,
                     reason === "aborted" ? "abort" : "reset",
                   );
+                if (activeState.disposable)
+                  await lifecycle.closeState(activeState);
               },
             },
           );
@@ -184,6 +204,13 @@ export function registerOmpAdapter(
               );
             } catch {
               /* Stream preserves the triggering error; cleanup remains tracked. */
+            }
+          }
+          if (state?.disposable && ownsRound) {
+            try {
+              await lifecycle.closeState(state);
+            } catch {
+              /* Cleanup failure stays owned by the host lifecycle and native diagnostics. */
             }
           }
           output.push({

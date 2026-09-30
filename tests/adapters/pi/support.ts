@@ -107,17 +107,31 @@ export function host() {
       getLeafId: () => "changing-leaf",
     },
   } as unknown as ExtensionContext;
+  const getProvider = () => {
+    if (!provider?.streamSimple) throw new Error("Provider not registered");
+    return provider as ProviderConfig & {
+      streamSimple: NonNullable<ProviderConfig["streamSimple"]>;
+    };
+  };
   return {
     pi,
     context,
     emit: async (event: ExtensionEvent, ctx = context) => {
       await handlers.get(event.type)?.(event, ctx);
     },
+    // Native main rounds always pass their host session ID. Raw extension
+    // complete() calls use rawProvider to exercise the unowned-call contract.
+    rawProvider: getProvider,
     provider: () => {
-      if (!provider?.streamSimple) throw new Error("Provider not registered");
-      return provider as ProviderConfig & {
-        streamSimple: NonNullable<ProviderConfig["streamSimple"]>;
-      };
+      const config = getProvider();
+      return {
+        ...config,
+        streamSimple: (model, context, options = {}) =>
+          config.streamSimple(model, context, {
+            sessionId: "host-session",
+            ...options,
+          }),
+      } as typeof config;
     },
   };
 }
