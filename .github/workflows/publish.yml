@@ -99,7 +99,8 @@ jobs:
           mkdir -p "$SCRATCH"
           npm pack --pack-destination "$SCRATCH" --json > "$SCRATCH/pack.json"
           PACKAGE_FILE=$(node --input-type=module -e 'import { readFileSync } from "node:fs"; console.log(JSON.parse(readFileSync(process.argv[1], "utf8"))[0].filename)' "$SCRATCH/pack.json")
-          npm publish "$SCRATCH/$PACKAGE_FILE" --access public
+          GITHUB_REF="refs/tags/$RELEASE_TAG" GITHUB_SHA="$(git rev-parse HEAD)" \
+            npm publish "$SCRATCH/$PACKAGE_FILE" --access public
 
   release:
     needs: [prepare, publish]
