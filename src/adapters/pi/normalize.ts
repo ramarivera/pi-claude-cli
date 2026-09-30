@@ -138,10 +138,11 @@ export function toPiRequest(
         `Pi option ${name} isn't supported by the Claude runtime adapter`,
       );
   }
-  const effort =
-    options.reasoning === "minimal"
-      ? "low"
-      : (options.reasoning ?? configuration.settings.effort);
+  if (options.reasoning === "minimal")
+    throw new Error(
+      "Pi reasoning minimal isn't supported by the Claude runtime adapter",
+    );
+  const effort = options.reasoning ?? configuration.settings.effort;
   if (effort && !model.reasoning)
     throw new Error(
       `Claude model ${model.id} doesn't support reasoning effort`,

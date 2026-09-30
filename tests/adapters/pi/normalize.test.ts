@@ -212,7 +212,10 @@ describe("Pi transcript normalization", () => {
     }
   });
   it("passes supported reasoning and rejects unsupported Haiku effort", () => {
-    expect(request({ reasoning: "minimal" }).settings.effort).toBe("low");
+    expect(() => request({ reasoning: "minimal" })).toThrow(
+      "reasoning minimal isn't supported",
+    );
+    expect(request({ reasoning: "low" }).settings.effort).toBe("low");
     expect(request({ reasoning: "high" }).settings.effort).toBe("high");
     expect(() =>
       toPiRequest(
