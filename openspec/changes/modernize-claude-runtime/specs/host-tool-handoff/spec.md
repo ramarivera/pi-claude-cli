@@ -52,3 +52,9 @@ Results, denied requests, tool errors and user questions SHALL preserve IDs, str
 
 - **WHEN** Claude is generating tool arguments or later blocks in the same assistant message
 - **THEN** the MCP parking deadline does not count that generation time; it begins at the completed assistant-message boundary for each unparked proposal, while normal stream cancellation and watchdog bounds remain active
+
+#### Scenario: Serialized MCP dispatch for a completed parallel proposal
+
+- **WHEN** a completed assistant message contains multiple authoritative exposed host-tool proposals but the official runtime dispatches one MCP call before waiting for its result to dispatch the next
+- **THEN** a matching actual MCP call releases the completed proposal batch to the host once; results for the remaining completed proposals may be buffered by authoritative ID without fabricating MCP request events
+- **AND** each actual MCP dispatch must match the immutable completed proposal ID, name and arguments; conflicting or missing dispatch fails within a bound, and abort settles both buffered and parked calls

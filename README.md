@@ -23,7 +23,7 @@ The package manifest exposes `pi.extensions` and `omp.extensions` for each host'
 
 ## Tools and sessions
 
-Each host supplies its effective tools and native JSON schemas. Claude calls them through the reserved `host` MCP namespace; Pi or OMP executes them, and the correlated results return to the parked Claude request. The runtime keeps a resident process/query across host tool rounds rather than killing Claude at an assistant-message boundary.
+Each host supplies its effective tools and native JSON schemas. Claude calls them through the reserved `host` MCP namespace; Pi or OMP executes them, and the correlated results return to the parked Claude request. The runtime keeps a resident process/query across host tool rounds rather than killing Claude at an assistant-message boundary. For a completed batch, the host may execute proposed calls before every MCP handler arrives. The core holds those results until each actual handler matches the completed call's ID, name and arguments.
 
 Native Claude tools are disabled by default. Explicitly configured Claude tools or user MCP servers execute under Claude ownership. They aren't renamed into host tools. OMP keeps its own hashline, apply-patch and replacement edit formats, distinct glob/search tools and timeout units.
 
@@ -42,7 +42,7 @@ Both entrypoints use the same environment settings. Restart/reload the extension
 | `PI_CLAUDE_MAX_TURNS`             | Unset          | Positive integer Claude turn bound                                                                       |
 | `PI_CLAUDE_MAX_OUTPUT_TOKENS`     | Unset          | Positive safe integer output cap per Claude response; combined with the host cap using the smaller value |
 | `PI_CLAUDE_MAX_BUDGET_USD`        | Unset          | Positive Claude budget bound                                                                             |
-| `PI_CLAUDE_TOOL_TIMEOUT_MS`       | `180000`       | Deadline for parked host tool results                                                                    |
+| `PI_CLAUDE_TOOL_TIMEOUT_MS`       | `180000`       | Deadline for dispatch after a completed tool proposal and for parked host results                        |
 | `PI_CLAUDE_SHUTDOWN_TIMEOUT_MS`   | `5000`         | Driver shutdown deadline                                                                                 |
 | `PI_CLAUDE_INTERNAL_TOOLS`        | `[]`           | JSON array of explicitly enabled Claude tool names                                                       |
 | `PI_CLAUDE_MCP_CONFIG`            | Unset          | File containing explicitly configured user `mcpServers`                                                  |
@@ -77,7 +77,7 @@ flowchart LR
   SDK --> Claude
 ```
 
-The core and drivers import neither host. OMP session state, progress presentation and native formats stay in the OMP adapter; the Pi entrypoint doesn't initialize OMP.
+The core and drivers import neither host. OMP session state, progress presentation and native formats stay in the OMP adapter; the Pi entrypoint doesn't initialize OMP. OMP exposes attributed progress on `pi-claude-cli:observation` and bounded message/tool correlation diagnostics on `pi-claude-cli:diagnostic`; the diagnostic bus excludes text, tool arguments, schemas and credentials.
 
 ## License
 

@@ -505,7 +505,7 @@ describe("Claude runtime session ownership (offline)", () => {
     await runtime.closeAll();
   });
 
-  it("waits for message completion and every real MCP park before exposing parallel host effects", async () => {
+  it("waits for message completion before exposing already parked parallel host effects", async () => {
     const driver = new OfflineDriver(),
       runtime = createClaudeRuntime({ driver });
     let complete = false;
@@ -563,7 +563,7 @@ describe("Claude runtime session ownership (offline)", () => {
     await runtime.closeAll();
   });
 
-  it("waits for the second proposed MCP call even after message_end", async () => {
+  it("releases a completed native batch after its first matched MCP call parks", async () => {
     const driver = new OfflineDriver(),
       runtime = createClaudeRuntime({ driver });
     let complete = false;
@@ -575,11 +575,547 @@ describe("Claude runtime session ownership (offline)", () => {
     step(session, "m", [call("a"), call("b")]);
     session.park(call("a"));
     await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(complete).toBe(false);
+    expect(complete).toBe(true);
+    expect(outcome(await pending).pendingToolCallIds).toEqual(["a", "b"]);
     session.park(call("b"));
     expect(outcome(await pending).reason).toBe("toolUse");
     await runtime.closeAll();
     expect(session.cancellations.every((result) => result.isError)).toBe(true);
+  });
+
+  it("buffers reverse ordered native results until serialized MCP dispatch matches each complete call", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const pending = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      const content: AssistantContent[] = [
+        { type: "thinking", thinking: "plan" },
+        call("a"),
+        call("b"),
+      ];
+      step(session, "batch", content, {
+        inputTokens: 10,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      });
+      session.park(call("a"));
+      const one = outcome(await pending),
+        a = toolResult("a"),
+        b = toolResult("b");
+      expect(one.content).toEqual(content);
+      expect(one.pendingToolCallIds).toEqual(["a", "b"]);
+      session.onResults = (results) => {
+        if (results[0].toolCallId === "a") session.park(call("b"));
+        else {
+          step(session, "final", [{ type: "text", text: "done" }]);
+          success(session, {
+            inputTokens: 20,
+            outputTokens: 5,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          });
+        }
+      };
+      const history: TranscriptMessage[] = [
+        user,
+        assistant(one.content, "toolUse"),
+        { role: "tool_result", ...b },
+        { role: "tool_result", ...a },
+      ];
+      const events = await collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: history,
+            input: { kind: "tool-results", results: [b, a, b] },
+          }),
+        ),
+      );
+      const two = outcome(events);
+      expect(two).toMatchObject({
+        reason: "stop",
+        content: [{ type: "text", text: "done" }],
+        usage: { inputTokens: 10, outputTokens: 3 },
+      });
+      expect(session.results.map((result) => result.toolCallId)).toEqual([
+        "a",
+        "b",
+      ]);
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "driver_event" &&
+            event.event.type === "host_tool_request",
+        ),
+      ).toEqual([]);
+      const nextUser: TranscriptMessage = {
+        role: "user",
+        content: [{ type: "text", text: "next" }],
+      };
+      session.onPrompt = () => {
+        step(session, "new-turn", [{ type: "text", text: "next done" }]);
+        success(session);
+      };
+      const three = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r3",
+              transcript: [...history, assistant(two.content), nextUser],
+              input: { kind: "prompt", content: nextUser.content },
+            }),
+          ),
+        ),
+      );
+      expect(three.reason).toBe("stop");
+      expect(driver.opened).toHaveLength(1);
+      expect(session.prompts).toHaveLength(2);
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
+  it("attests a released call arriving before result subscription without projecting it again", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      step(session, "batch", [call("a"), call("b")]);
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(0);
+      const one = outcome(await first);
+      session.park(call("b"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(2);
+      const a = toolResult("a"),
+        b = toolResult("b");
+      session.onResults = () => {
+        step(session, "final", [{ type: "text", text: "done" }]);
+        success(session);
+      };
+      const next = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+              { role: "tool_result", ...b },
+            ],
+            input: { kind: "tool-results", results: [b, a] },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const events = await next;
+      expect(outcome(events).content).toEqual([{ type: "text", text: "done" }]);
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "driver_event" &&
+            event.event.type === "host_tool_request",
+        ),
+      ).toEqual([]);
+      expect(session.results.map((result) => result.toolCallId)).toEqual([
+        "b",
+        "a",
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a new actual MCP request before its stream header after an earlier batch settles", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      step(session, "first", [call("a")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        a = toolResult("a"),
+        b = toolResult("b");
+      session.onResults = () => {
+        session.park(call("b"));
+        step(session, "second", [call("b")]);
+      };
+      const history: TranscriptMessage[] = [
+        user,
+        assistant(one.content, "toolUse"),
+        { role: "tool_result", ...a },
+      ];
+      const two = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r2",
+              transcript: history,
+              input: { kind: "tool-results", results: [a] },
+            }),
+          ),
+        ),
+      );
+      expect(two).toMatchObject({
+        reason: "toolUse",
+        content: [call("b")],
+        pendingToolCallIds: ["b"],
+      });
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      session.onResults = () => {
+        step(session, "final", [{ type: "text", text: "done" }]);
+        success(session);
+      };
+      const three = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r3",
+              transcript: [
+                ...history,
+                assistant(two.content, "toolUse"),
+                { role: "tool_result", ...b },
+              ],
+              input: { kind: "tool-results", results: [b] },
+            }),
+          ),
+        ),
+      );
+      expect(three).toMatchObject({
+        reason: "stop",
+        content: [{ type: "text", text: "done" }],
+      });
+      expect(session.results.map((result) => result.toolCallId)).toEqual([
+        "a",
+        "b",
+      ]);
+      expect(driver.opened).toHaveLength(1);
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
+  it("forwards a buffered result once when its MCP dispatch arrives during asynchronous steering", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      step(session, "batch", [call("a"), call("b")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        a = toolResult("a"),
+        b = toolResult("b");
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const submit = session.submitPrompt.bind(session);
+      session.submitPrompt = async (prompt) => {
+        await submit(prompt);
+        session.park(call("b"));
+        await gate;
+      };
+      session.onResults = (results) => {
+        if (results.some((result) => result.toolCallId === "b")) release();
+        if (results.some((result) => result.toolCallId === "a")) {
+          step(session, "final", [{ type: "text", text: "done" }]);
+          success(session);
+        }
+      };
+      const two = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r2",
+              transcript: [
+                user,
+                assistant(one.content, "toolUse"),
+                { role: "tool_result", ...a },
+                { role: "tool_result", ...b },
+              ],
+              input: {
+                kind: "tool-results",
+                results: [a, b],
+                steering: [{ type: "text", text: "continue" }],
+              },
+            }),
+          ),
+        ),
+      );
+      expect(two).toMatchObject({
+        reason: "stop",
+        content: [{ type: "text", text: "done" }],
+      });
+      expect(session.results.map((result) => result.toolCallId)).toEqual([
+        "b",
+        "a",
+      ]);
+      expect(session.prompts[1]).toMatchObject({
+        priority: "now",
+        content: [{ type: "text", text: "continue" }],
+      });
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
+  it.each(["id", "name", "arguments"] as const)(
+    "rejects conflicting late MCP %s before forwarding a buffered native result",
+    async (conflict) => {
+      vi.useFakeTimers();
+      const driver = new OfflineDriver(),
+        runtime = createClaudeRuntime({ driver });
+      const configured = request({
+        settings: { ...request().settings, toolResultTimeoutMs: 20 },
+      });
+      try {
+        const first = collect(runtime.streamRound(configured));
+        await vi.advanceTimersByTimeAsync(0);
+        const session = driver.sessions[0],
+          proposed = call("b");
+        step(session, "batch", [call("a"), proposed]);
+        session.park(call("a"));
+        const one = outcome(await first),
+          a = toolResult("a"),
+          b = toolResult("b");
+        proposed.arguments.path = "mutated caller value";
+        const actual = call("b");
+        if (conflict === "id") actual.id = "unknown";
+        else if (conflict === "name") actual.name = "different";
+        else actual.arguments.path = "mutated caller value";
+        session.onResults = () => session.park(actual);
+        const next = collect(
+          runtime.streamRound({
+            ...configured,
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+              { role: "tool_result", ...b },
+            ],
+            input: { kind: "tool-results", results: [b, a] },
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(21);
+        const two = outcome(await next);
+        expect(two).toMatchObject({
+          reason: "error",
+          error: { code: conflict === "id" ? "timeout" : "tool-correlation" },
+        });
+        expect(session.results.map((result) => result.toolCallId)).toEqual([
+          "a",
+        ]);
+        expect(session.closeCount).toBe(1);
+        expect(session.cancellations).toMatchObject([
+          { toolCallId: actual.id, isError: true },
+        ]);
+      } finally {
+        await runtime.closeAll();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("rejects mismatched first actual MCP arguments at the completed message boundary", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const pending = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      session.emit({
+        type: "assistant_snapshot",
+        messageId: "m",
+        content: [call("a"), call("b")],
+        attribution: {},
+      });
+      session.park({ ...call("a"), arguments: { path: "wrong" } });
+      session.emit({ type: "message_end", messageId: "m", attribution: {} });
+      expect(outcome(await pending)).toMatchObject({
+        reason: "error",
+        error: { code: "tool-correlation" },
+      });
+      expect(session.results).toEqual([]);
+      expect(session.closeCount).toBe(1);
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
+  it("keeps partial native delivery bounded without projecting the remaining call twice", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    const configured = request({
+      settings: { ...request().settings, toolResultTimeoutMs: 20 },
+    });
+    try {
+      const first = collect(runtime.streamRound(configured));
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      step(session, "batch", [call("a"), call("b")]);
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(0);
+      const one = outcome(await first),
+        a = toolResult("a");
+      session.onResults = () => session.park(call("b"));
+      const next = collect(
+        runtime.streamRound({
+          ...configured,
+          roundId: "r2",
+          transcript: [
+            user,
+            assistant(one.content, "toolUse"),
+            { role: "tool_result", ...a },
+          ],
+          input: { kind: "tool-results", results: [a] },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(21);
+      const events = await next;
+      expect(outcome(events)).toMatchObject({
+        reason: "error",
+        error: { code: "timeout" },
+      });
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      expect(
+        events.filter(
+          (event) => event.type === "round_end" && event.reason === "toolUse",
+        ),
+      ).toEqual([]);
+      expect(session.cancellations).toMatchObject([
+        { toolCallId: "b", isError: true },
+      ]);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts buffered native results and clears unresolved dispatch deadlines", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      step(session, "batch", [call("a"), call("b")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        a = toolResult("a"),
+        b = toolResult("b"),
+        controller = new AbortController();
+      const next = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            signal: controller.signal,
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+              { role: "tool_result", ...b },
+            ],
+            input: { kind: "tool-results", results: [a, b] },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      expect(vi.getTimerCount()).toBe(1);
+      controller.abort();
+      expect(outcome(await next).reason).toBe("aborted");
+      session.park(call("b"));
+      await Promise.resolve();
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      expect(session.closeCount).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("doesn't start a new user prompt while a complete batch is still awaiting native results or dispatch", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      step(session, "batch", [call("a"), call("b")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        nextUser: TranscriptMessage = {
+          role: "user",
+          content: [{ type: "text", text: "next" }],
+        };
+      const two = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r2",
+              transcript: [user, assistant(one.content, "toolUse"), nextUser],
+              input: { kind: "prompt", content: nextUser.content },
+            }),
+          ),
+        ),
+      );
+      expect(two.reason).toBe("error");
+      expect(session.prompts).toHaveLength(1);
+      expect(driver.opened).toHaveLength(1);
+      expect(session.closeCount).toBe(1);
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
+  it("rejects terminal success before a buffered proposal actually dispatches", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      step(session, "batch", [call("a"), call("b")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        a = toolResult("a"),
+        b = toolResult("b");
+      session.onResults = () => success(session);
+      const two = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r2",
+              transcript: [
+                user,
+                assistant(one.content, "toolUse"),
+                { role: "tool_result", ...a },
+                { role: "tool_result", ...b },
+              ],
+              input: { kind: "tool-results", results: [a, b] },
+            }),
+          ),
+        ),
+      );
+      expect(two).toMatchObject({
+        reason: "error",
+        error: { code: "tool-correlation" },
+      });
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      expect(session.closeCount).toBe(1);
+    } finally {
+      await runtime.closeAll();
+    }
   });
 
   it("supports snapshot-only definitive host tool boundaries without closing partial block snapshots", async () => {
@@ -2608,7 +3144,7 @@ describe("Claude runtime session ownership (offline)", () => {
     }
   });
 
-  it("reports the missing parallel handler after another call parks", async () => {
+  it("bounds a missing second dispatch even after both native results are buffered", async () => {
     vi.useFakeTimers();
     const driver = new OfflineDriver(),
       runtime = createClaudeRuntime({ driver });
@@ -2625,17 +3161,40 @@ describe("Claude runtime session ownership (offline)", () => {
       step(session, "parallel", [call("a"), call("b")]);
       await vi.advanceTimersByTimeAsync(5);
       session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(0);
+      const one = outcome(await pending),
+        a = toolResult("a"),
+        b = toolResult("b");
+      expect(one).toMatchObject({
+        reason: "toolUse",
+        pendingToolCallIds: ["a", "b"],
+      });
+      const continuation = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            settings: { ...request().settings, toolResultTimeoutMs: 20 },
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...b },
+              { role: "tool_result", ...a },
+            ],
+            input: { kind: "tool-results", results: [b, a] },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
       await vi.advanceTimersByTimeAsync(16);
-      expect(outcome(await pending)).toMatchObject({
+      expect(outcome(await continuation)).toMatchObject({
         reason: "error",
         error: {
           code: "timeout",
           details: { toolCallId: "b", toolName: "read", phase: "mcp-park" },
         },
       });
-      expect(session.cancellations.map((result) => result.toolCallId)).toEqual([
-        "a",
-      ]);
+      expect(session.cancellations).toEqual([]);
     } finally {
       await runtime.closeAll();
       vi.useRealTimers();

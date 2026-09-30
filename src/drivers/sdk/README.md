@@ -48,6 +48,15 @@ that both reach the actual SDK iterator before the host result is supplied.
 This proves decoder concurrency; it doesn't assert which frames the real Claude
 runtime emits while its tool handler is parked.
 
+The same real-SDK/offline-executable suite sends two simultaneous `mcp_message`
+requests to the same endpoint and proves both handlers park before either result
+is supplied, then resolves them in reverse order. SDK `handleMcpControlRequest()`
+stores each independent response by server and JSON-RPC request ID; MCP SDK
+`Protocol._onrequest()` starts each handler in its own promise chain.
+`DrainingMcpServer` observes those public callbacks for shutdown accounting and
+doesn't queue tool execution. The real Claude runtime can still schedule tools
+serially; multiple proposed tool blocks don't prove multiple handlers have parked.
+
 Native Claude tools are disabled by default. Explicit native tools and user MCP
 servers retain Claude ownership. User server names cannot replace `host`.
 Host permission bypass requires exact owned tool name and SDK provenance;

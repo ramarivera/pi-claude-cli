@@ -34,6 +34,12 @@ SDK queries SHALL retain correlated pending host tool calls while the host execu
 - **WHEN** the SDK requests a host-owned tool and the host returns its result in the next provider round
 - **THEN** the result resumes the correct pending SDK query without duplicate execution
 
+#### Scenario: Serialized dispatch with early results
+
+- **WHEN** the official runtime emits multiple completed host-tool proposals and dispatches their MCP calls sequentially
+- **THEN** results for completed proposals may arrive before their matching MCP handler; each result is retained for that authoritative call ID and delivered once when the actual handler arrives
+- **AND** cancellation, conflicting correlation and absent later dispatch remain bounded failures
+
 #### Scenario: Out-of-order parallel tools
 
 - **WHEN** two host tools complete in reverse order

@@ -123,3 +123,130 @@ it("official SDK yields stream stop and snapshot frames while an MCP control req
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+it("official SDK and the owned draining MCP server park two same-endpoint requests before either result and resolve them in reverse order (offline runtime)", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pcc-sdk-offline-parallel-"));
+  const prompts = new AsyncQueue<SDKUserMessage>();
+  const events = new AsyncQueue<DriverEventPayload>();
+  const bridge = new HostMcpBridge(
+    [
+      {
+        name: "edit",
+        owner: "host",
+        description: "offline edit",
+        inputSchema: {
+          type: "object",
+          properties: { input: { type: "string" } },
+          required: ["input"],
+        },
+      },
+      {
+        name: "pcc_sentinel",
+        owner: "host",
+        description: "offline sentinel",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ],
+    2000,
+    (event) => events.push(event),
+  );
+  const runtime = query({
+    prompt: prompts,
+    options: {
+      cwd,
+      executable: "node",
+      pathToClaudeCodeExecutable: fileURLToPath(
+        new URL("./offline-query-control.mjs", import.meta.url),
+      ),
+      env: { PATH: process.env.PATH, HOME: cwd, CLAUDE_CONFIG_DIR: cwd },
+      model: "offline-no-inference",
+      tools: [],
+      settingSources: [],
+      strictMcpConfig: true,
+      mcpServers: {
+        host: {
+          type: "sdk",
+          name: "host",
+          instance: bridge.server,
+          timeout: 2000,
+        },
+      },
+    },
+  });
+  const messages = runtime[Symbol.asyncIterator]();
+  const parkedEvents = events[Symbol.asyncIterator]();
+  try {
+    prompts.push({
+      type: "user",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "begin-offline-parallel" }],
+      },
+    });
+    const parked = [];
+    for (let index = 0; index < 4; index++)
+      parked.push((await withinDeadline(parkedEvents.next(), 2000)).value);
+    expect(parked).toMatchObject([
+      {
+        type: "host_tool_request",
+        call: { id: "toolu_offline_edit", name: "edit" },
+      },
+      {
+        type: "observation",
+        subtype: "host-mcp-park",
+        data: { toolUseId: "toolu_offline_edit" },
+      },
+      {
+        type: "host_tool_request",
+        call: { id: "toolu_offline_sentinel", name: "pcc_sentinel" },
+      },
+      {
+        type: "observation",
+        subtype: "host-mcp-park",
+        data: { toolUseId: "toolu_offline_sentinel" },
+      },
+    ]);
+    // Both actual handlers parked before either result was delivered to the bridge.
+    expect((await withinDeadline(messages.next(), 2000)).value).toMatchObject({
+      type: "system",
+      subtype: "init",
+    });
+    bridge.deliver([
+      {
+        toolCallId: "toolu_offline_sentinel",
+        toolName: "pcc_sentinel",
+        content: [{ type: "text", text: "offline sentinel result" }],
+        isError: false,
+      },
+    ]);
+    expect((await withinDeadline(messages.next(), 2000)).value).toMatchObject({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "offline-complete-offline-parallel-b",
+    });
+    bridge.deliver([
+      {
+        toolCallId: "toolu_offline_edit",
+        toolName: "edit",
+        content: [{ type: "text", text: "offline edit result" }],
+        isError: false,
+      },
+    ]);
+    expect((await withinDeadline(messages.next(), 2000)).value).toMatchObject({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "offline-complete-offline-parallel-a",
+    });
+  } finally {
+    bridge.cancel("offline test cleanup");
+    prompts.end(true);
+    runtime.close();
+    await withinDeadline(
+      Promise.all([messages.return?.(), bridge.forceClose()]),
+      3000,
+    );
+    events.end();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
