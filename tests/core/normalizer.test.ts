@@ -551,4 +551,353 @@ describe("shared Claude normalizer (offline)", () => {
       )[0],
     ).toMatchObject({ type: "session_error" });
   });
+  it.each([
+    null,
+    { type: "text", text: 42 },
+    { type: "thinking", thinking: 42 },
+    { type: "redacted_thinking", data: 42 },
+    { type: "image", source: { type: "url", url: "https://example.invalid" } },
+  ])(
+    "rejects a malformed assistant block %j without forwarding raw data",
+    (block) => {
+      expect(
+        make().normalize(snapshot("m", "frame", [block]))[0],
+      ).toMatchObject({ type: "session_error", error: { code: "protocol" } });
+    },
+  );
+
+  it("keeps unknown optional content as a bounded diagnostic while valid blocks survive", () => {
+    const events = make().normalize(
+      snapshot("m", "frame", [
+        { type: "future_block", private_payload: "secret" },
+        { type: "text", text: "valid" },
+      ]),
+    );
+    expect(events[0]).toMatchObject({
+      type: "observation",
+      subtype: "unknown-content",
+      data: { type: "future_block" },
+    });
+    expect(events[1]).toMatchObject({
+      type: "assistant_snapshot",
+      content: [{ type: "text", text: "valid" }],
+      contentIndexes: [1],
+    });
+    expect(JSON.stringify(events)).not.toContain("private_payload");
+  });
+
+  it("rejects invalid and cyclic JSON arguments while preserving nested valid schemas", () => {
+    const invalid: Record<string, unknown> = {};
+    invalid.self = invalid;
+    for (const input of [
+      { invalid: undefined },
+      { invalid: Number.NaN },
+      invalid,
+    ])
+      expect(
+        make().normalize(
+          snapshot("m", "a", [
+            { type: "tool_use", id: "a", name: "mcp__host__read", input },
+          ]),
+        )[0],
+      ).toMatchObject({ error: { code: "tool-correlation" } });
+    const events = make().normalize(
+      snapshot("m", "b", [
+        {
+          type: "tool_use",
+          id: "a",
+          name: "mcp__host__read",
+          input: { nested: [true, null, 1, { path: "file" }] },
+        },
+      ]),
+    );
+    expect(events[0]).toMatchObject({
+      content: [{ arguments: { nested: [true, null, 1, { path: "file" }] } }],
+    });
+  });
+
+  it("reports malformed MCP server rows alongside valid initialization metadata", () => {
+    const events = make().normalize({
+      type: "system",
+      subtype: "init",
+      session_id: "session",
+      model: "model",
+      claude_code_version: "2.1.285",
+      tools: [],
+      mcp_servers: [
+        null,
+        { name: "missing-status" },
+        { name: "host", status: "connected" },
+      ],
+    });
+    expect(events[0]).toMatchObject({
+      type: "initialized",
+      mcpServers: [{ name: "host", status: "connected" }],
+    });
+    expect(
+      events.filter((event) => event.type === "session_error"),
+    ).toHaveLength(2);
+  });
+
+  it("rejects malformed stream envelopes and allows pings without an active message", () => {
+    const n = make();
+    expect(n.normalize(stream(null))[0]).toMatchObject({
+      error: { code: "protocol" },
+    });
+    expect(n.normalize(stream({ type: "ping" }))).toEqual([]);
+    expect(
+      n.normalize(stream({ type: "content_block_stop", index: 0 }))[0],
+    ).toMatchObject({ error: { code: "protocol" } });
+    n.normalize(stream({ type: "message_start", message: { id: "m" } }));
+    expect(
+      n.normalize(stream({ type: "message_start", message: { id: "m" } })),
+    ).toEqual([]);
+    expect(
+      n.normalize(stream({ type: "content_block_stop", index: 0 }))[0],
+    ).toMatchObject({ error: { code: "protocol" } });
+    expect(
+      n.normalize(stream({ type: "future_stream", private: "secret" }))[0],
+    ).toMatchObject({ type: "observation", subtype: "unknown-event" });
+  });
+
+  it("keeps tool JSON deltas and doesn't convert native or child tool blocks into host content", () => {
+    const n = make();
+    n.normalize(stream({ type: "message_start", message: { id: "m" } }));
+    const start = stream({
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "a",
+        name: "mcp__host__read",
+        input: {},
+      },
+    });
+    n.normalize(start);
+    expect(n.normalize(start)).toEqual([]);
+    expect(
+      n.normalize(
+        stream({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: '{"path":"file"}' },
+        }),
+      )[0],
+    ).toMatchObject({
+      type: "content_delta",
+      delta: { kind: "tool-input", partialJson: '{"path":"file"}' },
+    });
+    expect(
+      n.normalize(
+        snapshot("m", "completed", [
+          {
+            type: "tool_use",
+            id: "a",
+            name: "mcp__host__read",
+            input: { path: "file" },
+          },
+        ]),
+      )[0],
+    ).toMatchObject({ type: "assistant_snapshot", contentIndexes: [0] });
+    n.normalize(
+      stream({
+        type: "content_block_start",
+        index: 1,
+        content_block: {
+          type: "tool_use",
+          id: "native",
+          name: "Read",
+          input: {},
+        },
+      }),
+    );
+    expect(
+      n.normalize(
+        stream({
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "input_json_delta", partial_json: "{}" },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      n.normalize(stream({ type: "content_block_stop", index: 1 })),
+    ).toEqual([]);
+    expect(
+      n.normalize(stream({ type: "content_block_stop", index: 1 })),
+    ).toEqual([]);
+  });
+
+  it("records unknown delta kinds without losing later valid text", () => {
+    const n = make();
+    n.normalize(stream({ type: "message_start", message: { id: "m" } }));
+    n.normalize(
+      stream({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      }),
+    );
+    expect(
+      n.normalize(
+        stream({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "future_delta", secret: "private" },
+        }),
+      )[0],
+    ).toMatchObject({
+      subtype: "unknown-delta",
+      data: { type: "future_delta" },
+    });
+    expect(
+      n.normalize(
+        stream({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "valid" },
+        }),
+      )[0],
+    ).toMatchObject({ delta: { text: "valid" } });
+  });
+
+  it.each(["authentication_failed", "max_output_tokens"])(
+    "maps assistant error %s with sanitized actionable text",
+    (subtype) => {
+      const events = make().normalize(
+        snapshot(
+          "m",
+          "frame",
+          [{ type: "text", text: "token=private failure" }],
+          { error: subtype },
+        ),
+      );
+      expect(events[1]).toMatchObject({
+        type: "session_error",
+        error: {
+          code: subtype === "authentication_failed" ? "auth" : "runtime",
+          subtype,
+          message: "token=[redacted] failure",
+        },
+      });
+      expect(
+        make().normalize(snapshot("m", "empty", [], { error: subtype }))[0],
+      ).toMatchObject({
+        type: "session_error",
+        error: { subtype, message: subtype },
+      });
+    },
+  );
+
+  it("dedupes full snapshots without a frame UUID and preserves supersession references", () => {
+    const n = make(),
+      raw = {
+        type: "assistant",
+        session_id: "session",
+        message: {
+          id: "m",
+          content: [{ type: "text", text: "same" }],
+          stop_reason: "end_turn",
+        },
+      };
+    expect(n.normalize(raw).map((event) => event.type)).toEqual([
+      "assistant_snapshot",
+      "message_end",
+    ]);
+    expect(n.normalize(raw)).toEqual([]);
+    expect(
+      n.normalize({
+        ...raw,
+        message: { ...raw.message, id: "replacement" },
+        uuid: "new",
+        supersedes: ["old"],
+      })[0],
+    ).toMatchObject({ supersedes: ["old"] });
+  });
+
+  it("retains agent-only child attribution and isolates its message and result state", () => {
+    const n = make();
+    const events = n.normalize(
+      snapshot(
+        "child",
+        "frame",
+        [{ type: "tool_use", id: "a", name: "mcp__host__read", input: {} }],
+        { agent_id: "child-agent", turn_id: "child-turn" },
+      ),
+    );
+    expect(events).toMatchObject([
+      {
+        type: "observation",
+        data: { owner: "subagent" },
+        attribution: { agentId: "child-agent", turnId: "child-turn" },
+      },
+    ]);
+    expect(
+      n.normalize(
+        result({
+          agent_id: "child-agent",
+          uuid: undefined,
+          user_message_uuid: "child-turn",
+        }),
+      )[0],
+    ).toMatchObject({ status: "success" });
+    expect(
+      n.normalize(result({ uuid: undefined, result_index: 0 }))[0],
+    ).toMatchObject({ status: "success" });
+  });
+
+  it("requires canonical progress IDs and records authentication status", () => {
+    for (const raw of [
+      { type: "tool_progress" },
+      { type: "system", subtype: "task_started" },
+      { type: "system" },
+    ])
+      expect(make().normalize(raw)[0]).toMatchObject({ type: "session_error" });
+    expect(
+      make().normalize({ type: "auth_status", isAuthenticating: true })[0],
+    ).toMatchObject({ type: "observation", subtype: "auth_status" });
+  });
+
+  it("bounds deep progress diagnostics and normalizes invalid usage scalars", () => {
+    const n = make();
+    let deep: Record<string, unknown> = { text: "private" };
+    for (let i = 0; i < 8; i++) deep = { child: deep };
+    const events = n.normalize({
+      type: "system",
+      subtype: "task_progress",
+      task_id: "task",
+      deep,
+      values: [true, null, Number.NaN],
+      big: Object.fromEntries(
+        Array.from({ length: 32 }, (_, i) => [
+          String(i).padEnd(80, "x"),
+          "x".repeat(512),
+        ]),
+      ),
+    });
+    expect(JSON.stringify(events).length).toBeLessThan(6000);
+    expect(JSON.stringify(events)).not.toContain("private");
+    const report = n.normalize(
+      result({
+        usage: {
+          input_tokens: Number.NaN,
+          output_tokens: -1,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 2,
+          reasoning_tokens: 4,
+        },
+        total_cost_usd: 0.1,
+      }),
+    );
+    expect(report[0]).toMatchObject({
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 2,
+        reasoningTokens: 4,
+        costUsd: 0.1,
+      },
+    });
+  });
 });
