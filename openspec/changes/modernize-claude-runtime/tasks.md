@@ -74,7 +74,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Current transcript prompt/tools, cwd host context, correct callbacks and AssistantMessage errors/usage; active exposure policy preserved; provider-ready tools and metadata project without SDK/OMP imports; entrypoint factory defined.
 
-- [ ] 5.2 Implement Pi tool and session lifecycle adaptation (`pcc-pi-life`; lane `pi`; 90 min).
+- [x] 5.2 Implement Pi tool and session lifecycle adaptation (`pcc-pi-life`; lane `pi`; 90 min).
   - Capabilities: `pi-adapter`, `host-tool-handoff`, `session-lifecycle`.
   - Blocked by: `pcc-pi-stream`.
   - Acceptance: Built-in/custom/native schemas and tools results round-trip, session start/shutdown/reload/compact/tree/branch lifecycle, reentrancy and unsupported capabilities checked; no autoactivation of all tools; same adapter works with both contract drivers.
@@ -86,7 +86,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: OMP normalized context.tools/schema format, hashline/apply-patch/replacement edit, separate glob/semantic find, bash timeout units, callbacks/errors, cwd and native entrypoint; no Pi package imports; native tools retain OMP owner.
 
-- [ ] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
+- [x] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
   - Capabilities: `omp-adapter`, `session-lifecycle`, `claude-event-contract`.
   - Blocked by: `pcc-omp-tools`.
   - Acceptance: Provider session store, shutdown/reload/subagent isolation, attributed task/status/limit progress and capability-gated steering; Claude tasks distinguished from OMP tasks; both drivers supported and unsupported capabilities explicit.
@@ -98,7 +98,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Sanitized recordings with provenance/license/CLI-SDK-host versions/flags plus labelled synthetic rare-event cases; old test-to-replacement matrix; coverage inventory includes payload categories and concrete researched regressions; paid captures only behind approved live gate.
 
-- [ ] 7.2 Build common driver and host contract suites (`pcc-conformance`; lane `verification`; 100 min).
+- [x] 7.2 Build common driver and host contract suites (`pcc-conformance`; lane `verification`; 100 min).
   - Capabilities: `verification-suite`, `cli-driver`, `sdk-driver`, `pi-adapter`, `omp-adapter`.
   - Blocked by: `pcc-fixtures`.
   - Acceptance: Same expected events/outcomes for real driver modules with offline injected transport seams; host contract checks use actual host types; ordering/abort/correlation/error/tool ownership scenarios and replay fixtures; tests cannot merely mirror implementation.

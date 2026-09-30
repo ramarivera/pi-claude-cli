@@ -34,6 +34,12 @@ Unisolated `pi --help` hit a pre-existing theme-package resolution failure (`my-
 
 ## Implementation checkpoints
 
+Latest integrated checkpoint (2026-09-30, before cutover/live): native Pi lifecycle and OMP lifecycle/output bounds are merged. The parent reviewed the OMP session/projection source and reran all 45 native OMP cases plus 79 common/fixture/native-host conformance cases: 124 passed. Full typecheck, OMP typecheck and lint passed. The conformance fixture now implements the actual OMP event bus contract. `pcc-omp-life` was closed by its assigned worker after parent acceptance; authenticated live proof remains a separate gate.
+
+The newer 686-test coverage checkpoint passed every test but failed the retained coverage gate at 91.02% lines/statements and 85.83% branches. A scoped core lane is adding meaningful lifecycle/protocol cases. It reproduced duplicate replacement-query acquisition while a prior resident closes; its serialization fix and regression are awaiting parent review. Pi cancellation during unresolved callbacks/runtime startup is also being checked. These findings are tracked in `pcc-offline`; thresholds aren't reduced.
+
+Production configuration now validates `PI_CLAUDE_MAX_OUTPUT_TOKENS` as a positive safe integer before transport startup (18 configuration tests passed). Each adapter must combine it with a native output cap using the smaller value. The live harness uses this bound, explicit thinking off and the approved official Max login. No paid inference has run at this checkpoint.
+
 The parent reviewed and merged the first shared normalizer, SDK query and CLI resident-process checkpoints. Parent reruns passed 26 core parser tests, 17 SDK query tests, 24 CLI process tests and the two completed worker typechecks. Shared configuration added 13 passing tests. These checks are offline; the legacy implementation hasn't been cut over and the four live combinations remain pending.
 
 The parent also ran the published Claude 2.1.285 `initialize` control handshake in an isolated temporary cwd with tools and setting sources disabled, without submitting a user prompt. The nested control response succeeded and returned 12 model entries. Its Haiku entry resolved `haiku` to `claude-haiku-4-5-20251001`, with no effort capabilities advertised. The process exited after stdin EOF and its temporary directory was removed. Only whitelisted model/capability fields were printed; account data wasn't captured. This validates initialization/readiness, not inference or host tool execution.
