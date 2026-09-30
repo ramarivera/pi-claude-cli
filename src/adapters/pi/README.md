@@ -81,6 +81,13 @@ than becoming parent assistant history; optional subagent forwarding enables
 those observations through core. Host-only tools aren't delegated to Claude
 subagents.
 
+The offline native-session prompt test uses the same public loader option as
+`--system-prompt`, actual Pi `createAgentSession`, exact Haiku model selection and
+reasoning off. It verifies the rendered native prompt reaches both
+`before_provider_request` and `ClaudeRuntime` unchanged, including a section-only
+preamble. Its injected runtime doesn't test Claude's obedience to conflicting
+system and user instructions.
+
 Source contract: installed canonical packages 0.99.1 and pinned Pi source
 `1b347794e2a630e4359f2584f4eea388145d0ddf`, particularly `packages/ai/src/types.ts`,
 `packages/ai/src/utils/transcript.ts` and
