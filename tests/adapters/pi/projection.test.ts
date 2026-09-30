@@ -204,6 +204,69 @@ describe("Pi event projection", () => {
     expect(projection.message.content).toEqual([{ ...call, type: "toolCall" }]);
     expect(projection.message.stopReason).toBe("toolUse");
   });
+  it("orders final history by original Claude blocks when MCP parking arrives after later text", async () => {
+    const projection = new PiProjection(model, [tool]);
+    projection.accept(
+      driver({
+        type: "content_start",
+        messageId: "m",
+        index: 0,
+        content: call,
+      }),
+    );
+    projection.accept(
+      driver({
+        type: "content_start",
+        messageId: "m",
+        index: 1,
+        content: { type: "text", text: "after tool" },
+      }),
+    );
+    projection.accept(driver({ type: "host_tool_request", call }));
+    projection.accept({
+      type: "round_end",
+      roundId: "r",
+      reason: "toolUse",
+      content: [call, { type: "text", text: "after tool" }],
+      pendingToolCallIds: [call.id],
+    });
+    const events = await collect(projection.stream);
+    expect(projection.message.content).toEqual([
+      { ...call, type: "toolCall" },
+      { type: "text", text: "after tool" },
+    ]);
+    const textEnd = events.find((event) => event.type === "text_end");
+    expect(textEnd).toMatchObject({
+      contentIndex: 0,
+      partial: {
+        content: [
+          { type: "text", text: "after tool" },
+          { ...call, type: "toolCall" },
+        ],
+      },
+    });
+  });
+  it("omits empty streamed text from final history to match core acknowledgement", async () => {
+    const projection = new PiProjection(model, [tool]);
+    projection.accept(
+      driver({
+        type: "content_start",
+        messageId: "m",
+        index: 0,
+        content: { type: "text", text: "" },
+      }),
+    );
+    projection.accept(driver({ type: "host_tool_request", call }));
+    projection.accept({
+      type: "round_end",
+      roundId: "r",
+      reason: "toolUse",
+      content: [call],
+      pendingToolCallIds: [call.id],
+    });
+    await collect(projection.stream);
+    expect(projection.message.content).toEqual([{ ...call, type: "toolCall" }]);
+  });
   it("rejects inactive host calls and conflicting snapshots", () => {
     const projection = new PiProjection(model, []);
     expect(() =>

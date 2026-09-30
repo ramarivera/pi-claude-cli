@@ -14,7 +14,7 @@ import type {
 
 export class PiProjection {
   readonly stream = createAssistantMessageEventStream();
-  readonly message: AssistantMessage;
+  message: AssistantMessage;
   private started = false;
   private terminal = false;
   private readonly positions = new Map<string, number>();
@@ -221,29 +221,59 @@ export class PiProjection {
     }
     this.start();
     if (round.model) this.message.responseModel = round.model;
-    // Round content is authoritative, but must retain previously emitted blocks.
-    let cursor = 0;
+    // Final history follows Claude's original block order even when MCP parking
+    // announced a tool after a later text block had already streamed.
+    const authoritative: AssistantMessage["content"] = [];
+    const retained = new Set<number>();
     for (const content of round.content) {
       if (content.type === "tool_call") {
-        if (!round.pendingToolCallIds.includes(content.id)) continue;
-        this.hostCall(content);
+        if (round.pendingToolCallIds.includes(content.id))
+          this.hostCall(content);
+        const index = this.hostCalls.get(content.id);
+        if (index !== undefined) {
+          authoritative.push(this.message.content[index]);
+          retained.add(index);
+        }
       } else {
         if (content.type === "image")
           throw new Error(
             "Pi assistant output doesn't support Claude image blocks",
           );
-        let index = this.message.content.findIndex(
-          (block, position) =>
-            position >= cursor && block.type === content.type,
-        );
+        const matches = (exact: boolean) =>
+          this.message.content.findIndex((block, index) => {
+            if (retained.has(index) || block.type !== content.type)
+              return false;
+            const current =
+              block.type === "text"
+                ? block.text
+                : block.type === "thinking"
+                  ? block.thinking
+                  : undefined;
+            const next =
+              content.type === "text" ? content.text : content.thinking;
+            return (
+              current !== undefined &&
+              (exact
+                ? current === next
+                : current.startsWith(next) || next.startsWith(current))
+            );
+          });
+        let index = matches(true);
+        if (index === -1) index = matches(false);
         if (index === -1)
-          index = this.block(`terminal:${cursor}`, content) ?? -1;
+          index = this.block(`terminal:${authoritative.length}`, content) ?? -1;
         if (index >= 0) {
           this.reconcile(index, content);
-          cursor = index + 1;
+          authoritative.push(this.message.content[index]);
+          retained.add(index);
         }
       }
     }
+    // Retain meaningful content already shown if a late snapshot omitted it.
+    this.message.content.forEach((block, index) => {
+      if (!retained.has(index) && (block.type !== "text" || block.text !== ""))
+        authoritative.push(block);
+    });
     if (round.usage) {
       const usage = round.usage;
       this.message.usage = {
@@ -268,7 +298,13 @@ export class PiProjection {
     }
     for (let index = 0; index < this.message.content.length; index++)
       this.end(index);
-    this.message.stopReason = round.reason;
+    // Terminal history has its own content array: queued partial event indexes
+    // still address their original shared helper, while done uses source order.
+    this.message = {
+      ...this.message,
+      content: structuredClone(authoritative),
+      stopReason: round.reason,
+    };
     if (round.reason === "error" || round.reason === "aborted")
       this.fail(
         round.error?.message ?? `Claude round ${round.reason}`,

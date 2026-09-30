@@ -119,14 +119,9 @@ export function toPiRequest(
 ): HostRoundRequest {
   for (const name of [
     "fetch",
-    "headers",
-    "timeoutMs",
     "maxRetries",
-    "maxRetryDelayMs",
     "temperature",
     "samplingParams",
-    "maxTokens",
-    "transport",
     "websocketConnectTimeoutMs",
     "metadata",
     "toolChoice",
@@ -138,6 +133,31 @@ export function toPiRequest(
         `Pi option ${name} isn't supported by the Claude runtime adapter`,
       );
   }
+  if (options.headers !== undefined && Object.keys(options.headers).length > 0)
+    throw new Error(
+      "Pi option headers isn't supported by the Claude runtime adapter",
+    );
+  if (options.transport !== undefined && options.transport !== "auto")
+    throw new Error(
+      `Pi transport ${options.transport} isn't supported by the configured Claude driver`,
+    );
+  if (
+    options.maxRetryDelayMs !== undefined &&
+    options.maxRetryDelayMs !== 60_000
+  )
+    throw new Error(
+      "Pi custom maxRetryDelayMs isn't supported by the Claude runtime adapter",
+    );
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+  )
+    throw new Error("Pi timeoutMs must be a finite nonnegative idle timeout");
+  if (
+    options.maxTokens !== undefined &&
+    (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)
+  )
+    throw new Error("Pi maxTokens must be a positive integer");
   if (options.reasoning === "minimal")
     throw new Error(
       "Pi reasoning minimal isn't supported by the Claude runtime adapter",
@@ -188,7 +208,13 @@ export function toPiRequest(
     })),
     transcript,
     input,
-    settings: { ...configuration.settings, effort },
+    settings: {
+      ...configuration.settings,
+      effort,
+      ...(options.maxTokens !== undefined
+        ? { maxOutputTokens: options.maxTokens }
+        : {}),
+    },
     auth: configuration.auth,
     signal: options.signal,
   };
@@ -196,14 +222,27 @@ export function toPiRequest(
 
 /** Hooks can change model input, but never credentials, session ownership or cancellation. */
 export function payloadForHook(request: HostRoundRequest): HostRoundRequest {
-  return {
-    ...structuredClone({ ...request, signal: undefined }),
-    auth:
-      request.auth.mode === "api-key"
-        ? { ...request.auth, apiKey: "[redacted]" }
-        : { ...request.auth },
-    signal: request.signal,
-  };
+  const payload = structuredClone({ ...request, signal: undefined });
+  const redact = (values: Readonly<Record<string, string>> | undefined) =>
+    values === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.keys(values).map((key) => [key, "[redacted]"]),
+        );
+  payload.auth =
+    request.auth.mode === "api-key"
+      ? { ...request.auth, apiKey: "[redacted]" }
+      : { ...request.auth };
+  payload.settings.userMcpServers = payload.settings.userMcpServers.map(
+    (server) => ({
+      ...server,
+      config:
+        server.config.type === "stdio"
+          ? { ...server.config, env: redact(server.config.env) }
+          : { ...server.config, headers: redact(server.config.headers) },
+    }),
+  );
+  return { ...payload, signal: request.signal };
 }
 export function replacementRequest(
   replacement: unknown,
