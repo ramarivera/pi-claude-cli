@@ -26,6 +26,7 @@ describe("shared entrypoint configuration", () => {
       ANTHROPIC_API_KEY: "offline-test-key",
       ANTHROPIC_BASE_URL: "https://example.invalid",
       PI_CLAUDE_MAX_TURNS: "4",
+      PI_CLAUDE_MAX_OUTPUT_TOKENS: "512",
       PI_CLAUDE_MAX_BUDGET_USD: "0.25",
       PI_CLAUDE_TOOL_TIMEOUT_MS: "1000",
       PI_CLAUDE_EFFORT: "xhigh",
@@ -41,6 +42,7 @@ describe("shared entrypoint configuration", () => {
     });
     expect(config.settings).toMatchObject({
       maxTurns: 4,
+      maxOutputTokens: 512,
       maxBudgetUsd: 0.25,
       toolResultTimeoutMs: 1000,
       effort: "xhigh",
@@ -56,6 +58,11 @@ describe("shared entrypoint configuration", () => {
     { PI_CLAUDE_AUTH: "api-key" },
     { PI_CLAUDE_MAX_TURNS: "1.5" },
     { PI_CLAUDE_MAX_TURNS: "0" },
+    { PI_CLAUDE_MAX_OUTPUT_TOKENS: "0" },
+    { PI_CLAUDE_MAX_OUTPUT_TOKENS: "-1" },
+    { PI_CLAUDE_MAX_OUTPUT_TOKENS: "1.5" },
+    { PI_CLAUDE_MAX_OUTPUT_TOKENS: "Infinity" },
+    { PI_CLAUDE_MAX_OUTPUT_TOKENS: "9007199254740992" },
     { PI_CLAUDE_MAX_BUDGET_USD: "Infinity" },
     { PI_CLAUDE_TOOL_TIMEOUT_MS: "-1" },
     { PI_CLAUDE_EFFORT: "ultra" },
