@@ -247,7 +247,7 @@ describe("current Pi provider registration", () => {
         ...terminal,
         reason: "error",
         content: [],
-        error: { kind: "transport", message: "startup failed" },
+        error: { code: "transport", message: "startup failed" },
       },
     ]);
     registerPiAdapter(native.pi, {
