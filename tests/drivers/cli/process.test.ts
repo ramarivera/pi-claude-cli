@@ -263,6 +263,10 @@ describe("CLI resident process (offline child double)", () => {
       config: JsonObject;
     };
     expect(before.systemPrompt).toBe(request().systemPrompt);
+    expect((before.config.mcpServers as JsonObject).host).not.toHaveProperty(
+      "env",
+    );
+    expect(before.environment).not.toHaveProperty("bunBeBun");
     expect(before.cwd).toBe(process.cwd());
     expect(before.args).toContain("--system-prompt-file");
     expect(before.args).not.toContain("--system-prompt");
