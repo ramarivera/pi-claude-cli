@@ -269,6 +269,22 @@ describe("Pi transcript normalization", () => {
       ).toBe(expected);
     },
   );
+  it("accepts Pi's disabled provider retry policy without changing the runtime request", () => {
+    expect(request({ maxRetries: 0 })).toEqual(request());
+  });
+  it.each([1, -1, "0", null, false])(
+    "rejects nonzero or malformed native maxRetries %j explicitly",
+    (maxRetries) => {
+      expect(() =>
+        request({
+          maxRetries:
+            maxRetries as unknown as SimpleStreamOptions["maxRetries"],
+        }),
+      ).toThrow(
+        "Pi option maxRetries isn't supported by the Claude runtime adapter",
+      );
+    },
+  );
   it.each([
     "fetch",
     "websocketConnectTimeoutMs",

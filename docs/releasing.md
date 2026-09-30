@@ -25,6 +25,23 @@ The `npm trust` CLI requires npm 11.15.0 or newer. Publishing via OIDC requires 
 
 Authenticated tests consume account resources and remain opt-in. Existing live receipts establish runtime behavior; a release also needs an installed-package check. Keep receipts and logs under `~/dev/agentic-scratchpads/pi-claude-cli/`, outside the published package.
 
+If pushing a tag doesn't start Actions, dispatch the workflow from `main` with the existing release tag (substitute the version being released):
+
+```nu
+gh workflow run publish.yml --ref main --field tag=v0.4.1
+```
+
+The workflow resolves the tag to an immutable commit and runs the release gates against it. Publication uses the workflow's actual GitHub source commit for provenance and requires its tarball to be byte-for-byte identical to the tag's tarball. A difference in any packaged file blocks publication. Don't override `GITHUB_REF` or `GITHUB_SHA`: npm checks those values against the signing certificate's source identity.
+
+After installing and deploying the exact pins, run the managed installed-package smoke for each driver:
+
+```nu
+with-env { PI_CLAUDE_INSTALLED_E2E: "1", PI_CLAUDE_DRIVER: "cli" } { node --test tests/e2e/installed.test.mjs }
+with-env { PI_CLAUDE_INSTALLED_E2E: "1", PI_CLAUDE_DRIVER: "sdk" } { node --test tests/e2e/installed.test.mjs }
+```
+
+These tests discover the provider through the real managed configuration and installed package. Pi uses `PI_OFFLINE=1` for package resolution so the smoke doesn't install or update unrelated home packages; Claude inference stays online. Scratch sessions and instrumentation keep test data separate from interactive sessions.
+
 ## Manual fallback
 
 If Actions publishing cannot be used, authenticate interactively with `npm login`, confirm `npm whoami` is the package maintainer, and run `npm publish --access public` from the same checked release commit. Complete any npm 2FA challenge. A manual local publish doesn't claim GitHub Actions provenance. Verify the registry before updating Toolbox.

@@ -7,8 +7,8 @@ Select the `pi-claude-cli` provider in the host's model picker. CLI is the defau
 ## Install the release
 
 ```text
-pi install npm:@ramarivera/pi-claude-cli@0.4.0
-omp plugin install @ramarivera/pi-claude-cli@0.4.0
+pi install npm:@ramarivera/pi-claude-cli@0.4.1
+omp plugin install @ramarivera/pi-claude-cli@0.4.1
 ```
 
 Authenticate with `claude auth login`, restart your host, and select a `pi-claude-cli/...` model. The npm package name is scoped; the provider ID stays `pi-claude-cli`. See [release instructions](docs/releasing.md) and [supported versions](docs/compatibility.md).

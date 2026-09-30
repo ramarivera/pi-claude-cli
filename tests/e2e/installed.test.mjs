@@ -11,6 +11,7 @@ import {
   configureHostIsolation,
   hostArgs,
   hostEnvironment,
+  managedPiStartupOutput,
   preflight,
   receiptDirectory,
   scratchDirectory,
@@ -42,10 +43,11 @@ for (const kind of ["pi", "omp"])
       );
       assert.equal(pkg.name, "@ramarivera/pi-claude-cli");
       assert.equal(pkg.version, expected.version);
+      let savedPiSettings;
+      const piSettingsPath = join(agentRoot, "settings.json");
       if (kind === "pi") {
-        const settings = JSON.parse(
-          readFileSync(join(agentRoot, "settings.json"), "utf8"),
-        );
+        const settings = JSON.parse(readFileSync(piSettingsPath, "utf8"));
+        savedPiSettings = settings;
         assert.ok(
           settings.packages.some(
             (item) =>
@@ -69,6 +71,9 @@ for (const kind of ["pi", "omp"])
       const env = hostEnvironment(kind, driver, sandbox, nonce);
       env.PI_CODING_AGENT_DIR = agentRoot;
       delete env.PI_CONFIG_DIR;
+      // Pi's offline package resolver still discovers installed packages and
+      // leaves model inference online; avoid updating unrelated home packages.
+      if (kind === "pi") env.PI_OFFLINE = "1";
       env.PCC_E2E_SYSTEM_MARKER = "RELEASE_SMOKE";
       const versions = preflight(kind, env);
       const args = hostArgs(kind, sandbox, "Use native host tools when asked.");
@@ -81,6 +86,9 @@ for (const kind of ["pi", "omp"])
       const host = new RpcHost(versions.binary, args, env, sandbox, {
         signal: context.signal,
         deadline: Date.now() + 175000,
+        ...(kind === "pi"
+          ? { allowNonJsonOutput: managedPiStartupOutput }
+          : {}),
       });
       const receipt = {
         provenance: "actual-managed-installed-package-rpc",
@@ -91,24 +99,32 @@ for (const kind of ["pi", "omp"])
         model: MODEL,
         versions,
         args,
+        ...(kind === "pi" ? { packageResolution: { PI_OFFLINE: "1" } } : {}),
         started: new Date().toISOString(),
       };
       try {
         const { models } = await host.command("get_available_models");
-        assert.equal(
-          models.filter(
-            (model) => model.provider === "pi-claude-cli" && model.id === MODEL,
-          ).length,
-          1,
-          "Installed package must register its model exactly once",
+        const registered = models.filter(
+          (model) => model.provider === "pi-claude-cli",
         );
-        await host.command("set_model", {
-          provider: "pi-claude-cli",
-          modelId: MODEL,
-        });
-        await host.command("set_thinking_level", { level: "off" });
+        assert.ok(
+          registered.length > 0,
+          "Installed provider must appear in the managed model picker",
+        );
+        assert.equal(
+          new Set(registered.map((model) => model.id)).size,
+          registered.length,
+          "Installed provider must register unique model IDs",
+        );
+        // OMP's RPC picker filters enabledModels; the CLI can select Haiku
+        // from the complete registry even when the managed picker excludes it.
+        const selected = (await host.command("get_state")).model;
+        assert.equal(selected.provider, "pi-claude-cli");
+        assert.equal(selected.id, MODEL);
+        receipt.registeredClaudeModels = registered.map((model) => model.id);
         await host.command("set_auto_retry", { enabled: false });
         await host.command("set_auto_compaction", { enabled: false });
+        host.rememberBaseline();
         await host.prompt(
           kind,
           "Use the native read tool to read release-fixture.txt. Then call pcc_sentinel exactly once. Report the exact file contents and the exact nonce from that tool. Don't use any other tools.",
@@ -129,7 +145,10 @@ for (const kind of ["pi", "omp"])
             event.data.toolName === "pcc_sentinel",
         );
         assert.equal(calls.length, 1, "Sentinel must execute exactly once");
-        const responses = events.filter((event) => event.type === "response");
+        const responses = events.filter(
+          (event) =>
+            event.type === "response" && event.data.driver !== undefined,
+        );
         assert.ok(responses.length > 0);
         assert.ok(
           responses.every(
@@ -147,7 +166,28 @@ for (const kind of ["pi", "omp"])
         receipt.error = { name: error.name, message: error.message };
         throw error;
       } finally {
+        receipt.responses = host.responses;
         receipt.cleanup = await host.close();
+        receipt.startupOutputCounts = host.startupOutputCounts;
+        if (savedPiSettings) {
+          const current = JSON.parse(readFileSync(piSettingsPath, "utf8"));
+          // Restore only flags this smoke set to false; preserve other live
+          // settings and any concurrent change to these flags.
+          for (const name of ["retry", "compaction"]) {
+            if (current[name]?.enabled !== false) continue;
+            if (Object.hasOwn(savedPiSettings[name] ?? {}, "enabled"))
+              current[name].enabled = savedPiSettings[name].enabled;
+            else {
+              delete current[name].enabled;
+              if (Object.keys(current[name]).length === 0) delete current[name];
+            }
+          }
+          writeFileSync(
+            piSettingsPath,
+            JSON.stringify(current, null, 2) + "\n",
+          );
+          receipt.piTestSettingsCleanup = "owned flags restored";
+        }
         receipt.finished = new Date().toISOString();
         const path = join(
           receiptDirectory(),

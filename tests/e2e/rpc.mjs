@@ -21,6 +21,20 @@ export const CASES = ["pi+cli", "pi+sdk", "omp+cli", "omp+sdk"];
 export const ROOT = realpathSync(new URL("../..", import.meta.url));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Deployed pi-powerline-footer emits these keybinding diagnostics via
+// console.debug during extension loading and session_start (index.ts:804,809).
+// Only the managed-install smoke opts in; unknown stdout remains fatal.
+export function managedPiStartupOutput(line) {
+  const known = new Set([
+    '[powerline-footer] Shortcut conflict for jumpChatBottom: "ctrl+shift+g" replaced with "super+up"',
+    '[powerline-footer] Shortcut conflict for scrollChatUp: "super+up" replaced with "super+down"',
+    '[powerline-footer] Shortcut conflict for scrollChatDown: "super+down" replaced with "super+shift+up"',
+    '[powerline-footer] Shortcut conflict for editorStart: "super+shift+up" replaced with "super+shift+down"',
+    '[powerline-footer] Shortcut conflict for editorEnd: "super+shift+down" is already in use',
+  ]);
+  return known.has(line) ? "powerline-shortcut-conflict" : undefined;
+}
+
 export function scratchRoot(env = process.env) {
   const project = join(homedir(), "dev/agentic-scratchpads/pi-claude-cli");
   const branch =
@@ -296,7 +310,14 @@ export class RpcHost {
   serial = 0;
   closed = false;
   parseError;
-  constructor(binary, args, env, cwd, { signal, deadline = Infinity } = {}) {
+  startupOutputCounts = {};
+  constructor(
+    binary,
+    args,
+    env,
+    cwd,
+    { signal, deadline = Infinity, allowNonJsonOutput } = {},
+  ) {
     this.signal = signal;
     this.deadline = deadline;
     this.child = spawn(binary, args, {
@@ -324,9 +345,14 @@ export class RpcHost {
         buffer = buffer.slice(end + 1);
         if (!line.trim()) continue;
         try {
-          this.frames.push(JSON.parse(line));
+          const frame = JSON.parse(line);
+          this.frames.push(frame);
         } catch {
-          this.parseError = new Error("Host emitted non-JSON RPC stdout");
+          const category = allowNonJsonOutput?.(line);
+          if (typeof category === "string" && category.length > 0)
+            this.startupOutputCounts[category] =
+              (this.startupOutputCounts[category] ?? 0) + 1;
+          else this.parseError = new Error("Host emitted non-JSON RPC stdout");
         }
       }
     });

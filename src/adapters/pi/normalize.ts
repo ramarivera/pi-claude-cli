@@ -119,7 +119,6 @@ export function toPiRequest(
 ): HostRoundRequest {
   for (const name of [
     "fetch",
-    "maxRetries",
     "temperature",
     "samplingParams",
     "websocketConnectTimeoutMs",
@@ -133,6 +132,11 @@ export function toPiRequest(
         `Pi option ${name} isn't supported by the Claude runtime adapter`,
       );
   }
+  // Core doesn't reissue provider rounds, so Pi's disabled retry policy is compatible.
+  if (options.maxRetries !== undefined && options.maxRetries !== 0)
+    throw new Error(
+      "Pi option maxRetries isn't supported by the Claude runtime adapter",
+    );
   if (options.headers !== undefined && Object.keys(options.headers).length > 0)
     throw new Error(
       "Pi option headers isn't supported by the Claude runtime adapter",

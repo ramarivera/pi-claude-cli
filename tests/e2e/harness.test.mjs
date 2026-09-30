@@ -13,6 +13,7 @@ import {
   executable,
   hostArgs,
   hostEnvironment,
+  managedPiStartupOutput,
   scratchDirectory,
   scratchRoot,
 } from "./rpc.mjs";
@@ -46,6 +47,87 @@ function hashlineEvents(input) {
     },
   ];
 }
+
+test("managed startup accepts only observed footer diagnostics and records categories without raw output", async () => {
+  const lines = [
+    '[powerline-footer] Shortcut conflict for jumpChatBottom: "ctrl+shift+g" replaced with "super+up"',
+    '[powerline-footer] Shortcut conflict for scrollChatUp: "super+up" replaced with "super+down"',
+    '[powerline-footer] Shortcut conflict for scrollChatDown: "super+down" replaced with "super+shift+up"',
+    '[powerline-footer] Shortcut conflict for editorStart: "super+shift+up" replaced with "super+shift+down"',
+    '[powerline-footer] Shortcut conflict for editorEnd: "super+shift+down" is already in use',
+  ];
+  const script = `const diagnostics=${JSON.stringify(lines.join("\n") + "\n")};process.stdout.write(diagnostics);process.stdin.on('data',chunk=>{const command=JSON.parse(chunk);if(command.type==='new_session')process.stdout.write(diagnostics);process.stdout.write(JSON.stringify({type:'response',id:command.id,success:true,data:{models:[]}})+'\\n')});process.stdin.on('end',()=>process.exit(0));`;
+  const rpc = new RpcHost(
+    process.execPath,
+    ["-e", script],
+    process.env,
+    scratchRoot(),
+    { allowNonJsonOutput: managedPiStartupOutput },
+  );
+  try {
+    assert.deepEqual(await rpc.command("get_available_models"), { models: [] });
+    assert.deepEqual(rpc.startupOutputCounts, {
+      "powerline-shortcut-conflict": 5,
+    });
+    // The deployed footer repeats the same diagnostics on new_session.
+    await rpc.command("new_session");
+    assert.deepEqual(rpc.startupOutputCounts, {
+      "powerline-shortcut-conflict": 10,
+    });
+    assert.equal(
+      JSON.stringify(rpc.frames).includes("powerline-footer"),
+      false,
+    );
+    assert.equal(rpc.parseError, undefined);
+  } finally {
+    await rpc.close();
+  }
+});
+
+for (const [name, line, opts] of [
+  [
+    "strict default rejects even known footer output",
+    '[powerline-footer] Shortcut conflict for editorEnd: "super+shift+down" is already in use',
+    {},
+  ],
+  [
+    "managed opt-in rejects unknown footer output",
+    '[powerline-footer] Shortcut conflict for editorEnd: "unknown" is already in use',
+    { allowNonJsonOutput: managedPiStartupOutput },
+  ],
+  [
+    "managed opt-in rejects malformed JSON",
+    '{"type":"response",',
+    { allowNonJsonOutput: managedPiStartupOutput },
+  ],
+  [
+    "managed opt-in rejects unrelated non-JSON output",
+    "unrelated startup diagnostics",
+    { allowNonJsonOutput: managedPiStartupOutput },
+  ],
+])
+  test(name, async () => {
+    const output = `${line}\n`;
+    const rpc = new RpcHost(
+      process.execPath,
+      [
+        "-e",
+        `process.stdout.write(${JSON.stringify(output)});process.stdin.resume();process.stdin.on('end',()=>process.exit(0));`,
+      ],
+      process.env,
+      scratchRoot(),
+      opts,
+    );
+    try {
+      await assert.rejects(
+        rpc.wait(() => false, "synthetic startup parsing", 1000),
+        /Host emitted non-JSON RPC stdout/,
+      );
+      assert.deepEqual(rpc.startupOutputCounts, {});
+    } finally {
+      await rpc.close();
+    }
+  });
 
 test("native fixture hashline proof accepts paired wrappers and unwrapped successful edits", () => {
   const body = "[fixture.txt#F27C]\nPUT 1.=1:\n+replacement";
