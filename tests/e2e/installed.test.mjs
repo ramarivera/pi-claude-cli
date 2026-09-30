@@ -139,6 +139,17 @@ for (const kind of ["pi", "omp"])
           .trim()
           .split("\n")
           .map(JSON.parse);
+        const nativeCalls = events
+          .filter((event) => event.type === "tool-start")
+          .map((event) => event.data.toolName);
+        assert.equal(nativeCalls.filter((name) => name === "read").length, 1);
+        assert.deepEqual(
+          nativeCalls.filter(
+            (name) => !["read", "pcc_sentinel"].includes(name),
+          ),
+          [],
+          "Smoke must execute only the requested native tools",
+        );
         const calls = events.filter(
           (event) =>
             event.type === "tool-start" &&
@@ -157,7 +168,7 @@ for (const kind of ["pi", "omp"])
           ),
           "Actual selected Claude transport and session identity missing",
         );
-        receipt.result = { text, sentinelCalls: calls.length };
+        receipt.result = { text, sentinelCalls: calls.length, nativeCalls };
         await host.command("new_session");
         receipt.transportCleanup = await host.transportIdle(join(sandbox, "t"));
         receipt.status = "passed";
