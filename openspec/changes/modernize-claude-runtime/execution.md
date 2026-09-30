@@ -34,6 +34,8 @@ Unisolated `pi --help` hit a pre-existing theme-package resolution failure (`my-
 
 ## Implementation checkpoints
 
+The first full paid matrix at `b02eed9` passed both Pi cases again but failed both OMP cases before driver initialization: the adapter rejected native OMP's injected `fetch` option. The new failure receipts retain the actual assistant error, zero reported usage and host-only natural cleanup: `main/receipts/omp-cli-1790778017000.json` and `main/receipts/omp-sdk-1790778020398.json`. `pcc-omp-life` was reopened for a source-grounded native-option correction and regression; `pcc-live` remains active. No default or semantic/cleanup assertion was weakened.
+
 At revision `102c455`, actual authenticated Pi + CLI and Pi + SDK each passed the complete seven-prompt case. Reviewed receipts: `main/receipts/pi-cli-1790777001296.json` and `main/receipts/pi-sdk-1790777096028.json` under the project scratchpads. Each established system-marker semantics, one correlated sentinel effect, authoritative resident identity, saved-host-history replay under a fresh Claude ID, streaming and native-tool aborts, post-abort completion and natural cleanup. Their final host-reported USD estimates were 0.042049 and 0.058624, respectively; these aren't subscription billing. OMP's two paid cases remain pending.
 
 The fresh integrated coverage gate passed 484 tests in 26 files, including the native Pi prompt proof and compiled OMP/Bun MCP probe. Current coverage: 93.88% lines/statements, 97.09% functions, 88.64% branches; thresholds remain 92%/88%. The parent also reran 17 Node harness checks, full/Pi/OMP typechecks, lint, formatting and strict OpenSpec validation successfully.

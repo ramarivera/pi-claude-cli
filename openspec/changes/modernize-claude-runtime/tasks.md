@@ -86,7 +86,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: OMP normalized context.tools/schema format, hashline/apply-patch/replacement edit, separate glob/semantic find, bash timeout units, callbacks/errors, cwd and native entrypoint; no Pi package imports; native tools retain OMP owner.
 
-- [x] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
+- [ ] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
   - Capabilities: `omp-adapter`, `session-lifecycle`, `claude-event-contract`.
   - Blocked by: `pcc-omp-tools`.
   - Acceptance: Provider session store, shutdown/reload/subagent isolation, attributed task/status/limit progress and capability-gated steering; Claude tasks distinguished from OMP tasks; both drivers supported and unsupported capabilities explicit.
@@ -115,7 +115,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-core-session`, `pcc-cli-control`, `pcc-sdk-handoff`, `pcc-pi-life`, `pcc-omp-life`, `pcc-e2e-harness`.
   - Acceptance: Root entrypoint shims and Pi/OMP discovery manifests select same neutral core+config driver; existing provider ID/root entrypoint retained; legacy migration excluded; replace old tests only with mapped equivalent/improved coverage; inspect every lane diff and receipts; no overlapping shared-file mutations.
 
-- [x] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
+- [ ] 8.2 Verify integrated offline regression and host compatibility matrix (`pcc-offline`; lane `integration`; 90 min).
   - Capabilities: `verification-suite`.
   - Blocked by: `pcc-cutover`.
   - Acceptance: Lint/typecheck/unit/replay/process/contract suites fresh green for declared host versions; resolve hooks/failures without silencing tests/any; compare coverage inventory, module import isolation and no orphan children/temp resources; record commands and hashes.
