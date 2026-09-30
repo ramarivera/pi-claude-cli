@@ -171,7 +171,10 @@ export function toRequest(
   session: HostSessionIdentity,
   cwd: string,
 ): HostRoundRequest {
-  // OMP sampling defaults are undefined; these explicit controls have no Claude transport equivalent.
+  // OMP injects fetch and thinkingBudgets even for custom providers. Native fetch
+  // applies only to HTTP transports; token thinking budgets apply only to token-based
+  // reasoning providers. Claude owns its subprocess transport and effort policy.
+  // Sampling defaults are undefined, so these are unsupported explicit overrides.
   for (const key of [
     "temperature",
     "topP",
@@ -182,8 +185,6 @@ export function toRequest(
     "repetitionPenalty",
     "stopSequences",
     "headers",
-    "fetch",
-    "thinkingBudgets",
   ] as const) {
     if (options[key] !== undefined)
       throw new Error(
