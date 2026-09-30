@@ -1,8 +1,8 @@
-import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { record, response, sentinel, slow } from "./observer.js";
 
 export default function register(api: ExtensionAPI): void {
+  const { Type } = api.typebox;
   api.on("cache_warming_decision", () => ({ action: "stop" }));
   api.on("after_provider_response", (event) =>
     response(event.status, event.headers),

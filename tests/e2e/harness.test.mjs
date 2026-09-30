@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { ROOT, RpcHost, executable, hostEnvironment } from "./rpc.mjs";
+import {
+  ROOT,
+  RpcHost,
+  assertSocketCapacity,
+  executable,
+  hostEnvironment,
+  scratchDirectory,
+  scratchRoot,
+} from "./rpc.mjs";
 
 function runnerEnvironment(overrides) {
   const env = { ...process.env, ...overrides };
@@ -27,7 +34,7 @@ test("disabled direct runner explicitly skips all four authenticated cases", () 
 });
 
 test("opt-in with a missing host prerequisite fails without starting inference", () => {
-  const receipts = mkdtempSync(join(tmpdir(), "pcc-prerequisite-receipts-"));
+  const receipts = scratchDirectory("prerequisite-receipts-");
   try {
     const env = runnerEnvironment({
       PI_CLAUDE_LIVE_E2E: "1",
@@ -128,6 +135,28 @@ test("executable prerequisite rejects missing paths", () => {
   );
 });
 
+test("scratch defaults and Linux socket capacity obey the project storage rule", () => {
+  const root = scratchRoot();
+  assert.ok(root.includes("/dev/agentic-scratchpads/pi-claude-cli/"));
+  const sandbox = scratchDirectory("e-");
+  try {
+    assert.ok(assertSocketCapacity(sandbox) <= 107);
+    assert.throws(
+      () => assertSocketCapacity(join(root, "x".repeat(108))),
+      /exceeds Linux Unix socket capacity/,
+    );
+    assert.throws(
+      () =>
+        scratchRoot({
+          PI_CLAUDE_E2E_SCRATCH_DIR: "/tmp/not-authorized-storage",
+        }),
+      /must be under the project scratchpads/,
+    );
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("test-context cancellation rejects an active RPC wait and permits awaited cleanup", async () => {
   const controller = new AbortController();
   const rpc = new RpcHost(
@@ -137,7 +166,7 @@ test("test-context cancellation rejects an active RPC wait and permits awaited c
       "process.stdin.resume(); process.stdin.on('end',()=>process.exit(0));",
     ],
     process.env,
-    tmpdir(),
+    scratchRoot(),
     { signal: controller.signal },
   );
   try {
@@ -176,7 +205,7 @@ for (const host of ["pi", "omp"]) {
       process.execPath,
       ["--input-type=module", "-e", script],
       process.env,
-      tmpdir(),
+      scratchRoot(),
     );
     try {
       const since = rpc.frames.length;
@@ -197,6 +226,60 @@ for (const host of ["pi", "omp"]) {
       const cleanup = await rpc.close();
       assert.deepEqual(cleanup.forcedChildren, []);
       assert.deepEqual(cleanup.survivors, []);
+    }
+  });
+}
+
+for (const mode of ["graceful", "leak", "ignore"]) {
+  test(`synthetic child ownership ${mode}: host SIGTERM precedes fallback`, async () => {
+    const sandbox = scratchDirectory("cleanup-fixture-");
+    const log = join(sandbox, "child-signals.log");
+    const rpc = new RpcHost(
+      process.execPath,
+      [join(ROOT, "tests/e2e/cleanup-host.mjs"), mode, log],
+      process.env,
+      sandbox,
+    );
+    let cleanup;
+    try {
+      const ready = await rpc.wait(
+        () => rpc.frames.find((frame) => frame.type === "fixture_ready"),
+        "synthetic owned child ready",
+      );
+      rpc.track();
+      cleanup = await rpc.close();
+      assert.deepEqual(cleanup.survivors, []);
+      assert.ok(cleanup.observedPids.includes(ready.childPid));
+      if (mode === "graceful") {
+        assert.equal(
+          readFileSync(log, "utf8"),
+          "owner-shutdown\n",
+          "Harness signalled the child instead of letting its host close it",
+        );
+        assert.deepEqual(cleanup.forcedChildren, []);
+        assert.equal(cleanup.hostRequiredKill, false);
+      } else {
+        assert.deepEqual(
+          cleanup.forcedChildren,
+          [ready.childPid],
+          "Fallback must identify the actual leaked child",
+        );
+        assert.equal(cleanup.hostRequiredKill, mode === "ignore");
+        if (mode === "leak")
+          assert.equal(readFileSync(log, "utf8"), "direct-child-sigterm\n");
+        else
+          assert.equal(
+            existsSync(log),
+            false,
+            "Emergency group SIGKILL must not masquerade as owner cleanup",
+          );
+      }
+    } finally {
+      try {
+        if (!cleanup) await rpc.close();
+      } finally {
+        rmSync(sandbox, { recursive: true, force: true });
+      }
     }
   });
 }
