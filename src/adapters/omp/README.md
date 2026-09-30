@@ -12,7 +12,7 @@ OMP's managed `setTimeout`/`clearTimer` honor first-event and stream-idle deadli
 
 `onPayload` observes a detached request with auth and configured MCP credentials redacted. Replacements can change model, cwd, system prompt, prompt content or an exact effective-tool subset. They can't replace auth, settings, session or correlated history/results. Prompt replacements update the trailing transcript prompt as well.
 
-`onResponse` fires once per round after an actual transport event, before content projection. It reports status `0`, driver/transport headers and an authoritative initialized or attributed Claude session ID when available. Metadata labels history replay, unsupported live steering and Claude's reported USD estimate. Incremental `round_end` usage is the host allocation; cumulative turn usage isn't added again. Unknown cost components stay zero.
+`onResponse` fires once per round after an authoritative Claude session ID is known or an actual initialization/failure event arrives, before projecting that event. Startup diagnostics wait for initialization; startup failures report truthful metadata without inventing a session ID. It reports status `0`, driver/transport headers and an authoritative initialized or attributed Claude session ID when available. Metadata labels history replay, unsupported live steering and Claude's reported USD estimate. Incremental `round_end` usage is the host allocation; cumulative turn usage isn't added again. Unknown cost components stay zero.
 
 OMP has no generic provider-stream-event extension hook. Claude task/progress/status observations use `ctx.ui.setStatus` and the native extension event bus:
 

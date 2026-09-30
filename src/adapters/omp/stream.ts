@@ -339,13 +339,25 @@ export function projectRound(
         }
         observation.activity?.();
         const event = item.event;
-        if (!event.attribution.parentToolUseId && !event.attribution.agentId) {
+        const mainEvent =
+          !event.attribution.parentToolUseId && !event.attribution.agentId;
+        if (mainEvent) {
           if (event.type === "initialized")
             observation.claudeSessionId = event.claudeSessionId;
           else if (event.attribution.claudeSessionId)
             observation.claudeSessionId = event.attribution.claudeSessionId;
         }
-        if (!responded) {
+        // Startup transport diagnostics can precede initialization. Wait for the
+        // authoritative main session identity, or report an actual startup failure
+        // without fabricating one.
+        if (
+          !responded &&
+          (observation.claudeSessionId ||
+            (mainEvent &&
+              (event.type === "initialized" ||
+                event.type === "session_error" ||
+                event.type === "session_closed")))
+        ) {
           responded = true;
           await withSignal(
             Promise.resolve(
