@@ -33,6 +33,21 @@ Every handler has a wall-clock deadline; the runtime's per-server timeout is set
 as well (its published minimum is 1000 ms). Interrupt and close settle pending
 calls with `isError: true`, clear their timers and cancel interactions.
 
+An actual newly parked handler emits `host_tool_request`, immediately followed by
+the diagnostic observation `host-mcp-park`. Its data contains only `toolUseId`,
+`toolName` and `serverName`; it includes no arguments or results. Identical calls
+don't emit a second observation. The observation shares session/turn/tool-use
+attribution and the normal monotonic event sequence.
+
+In installed Agent SDK 0.3.285, `readMessages()` starts `handleControlRequest()`
+without awaiting it. The MCP control handler awaits its response independently;
+`readSdkMessages()` continues yielding frames from the input stream. The offline
+official-SDK regression uses a fake no-inference executable to emit
+`message_stop` and an assistant snapshot after a host call parks, and verifies
+that both reach the actual SDK iterator before the host result is supplied.
+This proves decoder concurrency; it doesn't assert which frames the real Claude
+runtime emits while its tool handler is parked.
+
 Native Claude tools are disabled by default. Explicit native tools and user MCP
 servers retain Claude ownership. User server names cannot replace `host`.
 Host permission bypass requires exact owned tool name and SDK provenance;

@@ -194,6 +194,21 @@ async function nextEvent(
 ) {
   const event = (await events.next()).value;
   expect(event?.type).toBe(type);
+  if (event?.type === "host_tool_request") {
+    const observation = (await events.next()).value;
+    expect(observation).toEqual({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "host-mcp-park",
+      sequence: event.sequence + 1,
+      attribution: event.attribution,
+      data: {
+        toolUseId: event.call.id,
+        toolName: event.call.name,
+        serverName: "host",
+      },
+    });
+  }
   return event;
 }
 
@@ -253,7 +268,7 @@ describe("SDK host tool handoff (offline query, real MCP protocol)", () => {
     });
     expect(secondEvent).toMatchObject({
       call: { id: "claude-b" },
-      sequence: 2,
+      sequence: 3,
     });
     const settledA = vi.fn();
     const settledB = vi.fn();

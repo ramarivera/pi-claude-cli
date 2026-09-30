@@ -185,6 +185,16 @@ export class HostMcpBridge {
     });
     this.pending.set(call.id, { call, promise, settle });
     this.emit({ type: "host_tool_request", call: structuredClone(call) });
+    this.emit({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "host-mcp-park",
+      data: {
+        toolUseId: call.id,
+        toolName: call.name,
+        serverName: HOST_MCP_NAME,
+      },
+    });
     if (early) settle(early);
     return promise;
   }
