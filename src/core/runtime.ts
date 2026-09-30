@@ -53,7 +53,7 @@ interface Round {
   finished: Promise<void>;
   settle: () => void;
   abort?: () => void;
-  proposalTimer?: ReturnType<typeof setTimeout>;
+  proposalTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
 interface Session {
   identity: SessionIdentity;
@@ -259,7 +259,8 @@ export function createClaudeRuntime(
     if (round.done) return;
     round.done = true;
     round.settle();
-    if (round.proposalTimer) clearTimeout(round.proposalTimer);
+    for (const timer of round.proposalTimers.values()) clearTimeout(timer);
+    round.proposalTimers.clear();
     round.request.signal?.removeEventListener(
       "abort",
       round.abort as EventListener,
@@ -378,7 +379,9 @@ export function createClaudeRuntime(
     session: Session,
     round: Round,
     call: HostToolCall,
+    dispatchReady = false,
   ): boolean => {
+    if (round.done) return false;
     if (
       !call.id ||
       !round.request.tools.some((tool) => tool.name === call.name)
@@ -406,19 +409,29 @@ export function createClaudeRuntime(
       ...call,
       arguments: structuredClone(call.arguments),
     });
-    if (!round.proposalTimer)
-      round.proposalTimer = setTimeout(
-        () =>
-          abort(
-            session,
-            round,
-            error(
-              "timeout",
-              "Proposed host calls didn't all reach parked MCP handlers",
-            ),
+    // Claude dispatches tools after the assistant message ends. Even a finished
+    // tool block can precede more streamed blocks, so don't charge generation
+    // time against the deadline for reaching the MCP handler.
+    if (
+      dispatchReady &&
+      !session.parked.has(call.id) &&
+      !round.proposalTimers.has(call.id)
+    ) {
+      const timer = setTimeout(() => {
+        abort(session, round, {
+          ...error(
+            "timeout",
+            "Proposed host calls didn't all reach parked MCP handlers",
           ),
-        round.request.settings.toolResultTimeoutMs,
-      );
+          details: {
+            toolCallId: call.id.slice(0, 128),
+            toolName: call.name.slice(0, 128),
+            phase: "mcp-park",
+          },
+        });
+      }, round.request.settings.toolResultTimeoutMs);
+      round.proposalTimers.set(call.id, timer);
+    }
     return true;
   };
   const delta = (
@@ -657,6 +670,8 @@ export function createClaudeRuntime(
                   return;
                 }
                 round.proposals.delete(old.id);
+                clearTimeout(round.proposalTimers.get(old.id));
+                round.proposalTimers.delete(old.id);
               }
               prior.blocks.delete(index);
             }
@@ -673,7 +688,8 @@ export function createClaudeRuntime(
         event.content.forEach((content, index) => {
           const position = event.contentIndexes?.[index] ?? index;
           msg.blocks.set(position, copy(content));
-          if (content.type === "tool_call") propose(session, round, content);
+          if (content.type === "tool_call")
+            propose(session, round, content, msg.ended);
         });
         if (event.model) msg.model = event.model;
         if (event.usage) msg.usage = event.usage;
@@ -684,6 +700,9 @@ export function createClaudeRuntime(
         msg.ended = true;
         msg.stopReason = event.stopReason;
         if (event.usage) msg.usage = event.usage;
+        for (const content of msg.blocks.values())
+          if (content.type === "tool_call")
+            propose(session, round, content, true);
         maybeParked(session, round);
         break;
       }
@@ -700,6 +719,8 @@ export function createClaudeRuntime(
           break;
         }
         if (!propose(session, round, event.call)) break;
+        clearTimeout(round.proposalTimers.get(event.call.id));
+        round.proposalTimers.delete(event.call.id);
         const timer = setTimeout(() => {
           if (!session.parked.has(event.call.id)) return;
           const cause = error(
@@ -1080,6 +1101,7 @@ export function createClaudeRuntime(
           channel: new Channel(),
           messages: new Map(),
           proposals: new Map(),
+          proposalTimers: new Map(),
           done: false,
           finished,
           settle,
