@@ -240,9 +240,14 @@ describe("Pi transcript normalization", () => {
       ).settings.effort,
     ).toBeUndefined();
   });
+  it("preserves native output limits and validates them before runtime use", () => {
+    expect(request({ maxTokens: 8192 }).settings.maxOutputTokens).toBe(8192);
+    expect(() => request({ maxTokens: 0 })).toThrow("positive integer");
+    expect(() => request({ maxTokens: 1.5 })).toThrow("positive integer");
+  });
   it.each([
     "fetch",
-    "maxTokens",
+    "websocketConnectTimeoutMs",
     "temperature",
     "toolChoice",
     "thinkingBudgets",
