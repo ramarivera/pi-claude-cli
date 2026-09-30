@@ -33,7 +33,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 2. Core lane
 
-- [ ] 2.1 Implement neutral event reconciliation and terminal outcomes (`pcc-core-events`; lane `core`; 90 min).
+- [x] 2.1 Implement neutral event reconciliation and terminal outcomes (`pcc-core-events`; lane `core`; 90 min).
   - Capabilities: `claude-event-contract`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Delta/full assistant dedupe, typed error/result mapping, usage and attributed retry/limit/task/status events pass state regression tests; one terminal outcome per turn; unknown event policy preserves diagnostics.
@@ -45,7 +45,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 3. CLI lane
 
-- [ ] 3.1 Implement raw CLI transport and process resource cleanup (`pcc-cli-process`; lane `cli`; 90 min).
+- [x] 3.1 Implement raw CLI transport and process resource cleanup (`pcc-cli-process`; lane `cli`; 90 min).
   - Capabilities: `cli-driver`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Correct prompt-file flag/cwd/argv/env, bidirectional NDJSON, fragmented UTF-8/lines and EPIPE/EOF/stderr/exit errors; drain/timeout/signal cleanup and per-request resources pass deterministic child-process tests.
@@ -57,7 +57,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 4. SDK lane
 
-- [ ] 4.1 Implement official SDK driver and explicit auth options (`pcc-sdk-query`; lane `sdk`; 90 min).
+- [x] 4.1 Implement official SDK driver and explicit auth options (`pcc-sdk-query`; lane `sdk`; 90 min).
   - Capabilities: `sdk-driver`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Official query executable/model/env options, inherited Claude login default, explicit API-key mode without hidden billing overrides, authoritative session IDs and callbacks, interrupt/close; lazy import allows CLI-only load; dependency transport never direct HTTP imitation.
