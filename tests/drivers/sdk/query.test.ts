@@ -105,6 +105,26 @@ async function open(t = transport(), r = request()) {
 }
 
 describe("official SDK query (offline doubles)", () => {
+  it("applies the requested output-token setting without changing the parent environment", async () => {
+    const r = request();
+    r.settings.maxOutputTokens = 8192;
+    const previous = process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+    const { t } = await open(transport(), r);
+    expect(t.options.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe("8192");
+    expect(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe(previous);
+  });
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid output-token limit %s before loading the SDK",
+    async (limit) => {
+      const r = request();
+      r.settings.maxOutputTokens = limit;
+      const loadSdk = vi.fn(async () => ({ query: transport().query }));
+      await expect(createSdkDriver({ loadSdk }).openSession(r)).rejects.toThrow(
+        "maxOutputTokens must be a positive integer",
+      );
+      expect(loadSdk).not.toHaveBeenCalled();
+    },
+  );
   it("doesn't load SDK until an authenticated session is opened", async () => {
     const t = transport();
     const loadSdk = vi.fn(async () => ({ query: t.query }));

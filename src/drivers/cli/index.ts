@@ -65,6 +65,10 @@ function environment(
   env.ENABLE_CLAUDEAI_MCP_SERVERS = "0";
   env.MCP_TIMEOUT = String(request.settings.toolResultTimeoutMs);
   env.MCP_TOOL_TIMEOUT = String(request.settings.toolResultTimeoutMs);
+  if (request.settings.maxOutputTokens !== undefined)
+    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(
+      request.settings.maxOutputTokens,
+    );
   return env;
 }
 function preflight(
@@ -143,6 +147,12 @@ export function createCliDriver(
       )
         throw new Error("toolResultTimeoutMs must be positive and finite");
 
+      if (
+        request.settings.maxOutputTokens !== undefined &&
+        (!Number.isSafeInteger(request.settings.maxOutputTokens) ||
+          request.settings.maxOutputTokens <= 0)
+      )
+        throw new Error("maxOutputTokens must be a positive integer");
       if (
         request.settings.maxTurns !== undefined &&
         (!Number.isSafeInteger(request.settings.maxTurns) ||

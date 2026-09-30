@@ -81,7 +81,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 6. OMP lane
 
-- [ ] 6.1 Implement OMP provider stream and native tool formats (`pcc-omp-tools`; lane `omp`; 100 min).
+- [x] 6.1 Implement OMP provider stream and native tool formats (`pcc-omp-tools`; lane `omp`; 100 min).
   - Capabilities: `omp-adapter`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: OMP normalized context.tools/schema format, hashline/apply-patch/replacement edit, separate glob/semantic find, bash timeout units, callbacks/errors, cwd and native entrypoint; no Pi package imports; native tools retain OMP owner.
