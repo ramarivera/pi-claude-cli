@@ -384,8 +384,20 @@ describe("native OMP request normalization", () => {
     });
   });
   it("accepts real OMP default controls and rejects concrete unsupported overrides", () => {
+    const httpFetch = () => {
+      throw new Error("Claude subprocess mustn't invoke OMP HTTP fetch");
+    };
     expect(() =>
       request({
+        fetch: httpFetch,
+        thinkingBudgets: {
+          minimal: 1024,
+          low: 2048,
+          medium: 8192,
+          high: 16384,
+          xhigh: 32768,
+          max: 32768,
+        },
         disableReasoning: false,
         hideThinkingSummary: false,
         maxRetryDelayMs: 60000,
