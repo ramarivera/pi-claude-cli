@@ -1399,6 +1399,99 @@ describe("Claude runtime session ownership (offline)", () => {
     await runtime.closeAll();
   });
 
+  it("releases a resident host round when an older raw snapshot arrives during its current tool stream", async () => {
+    vi.useFakeTimers();
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      await vi.advanceTimersByTimeAsync(0);
+      const session = driver.sessions[0];
+      const raw = (event: unknown) =>
+        session.raw({
+          type: "stream_event",
+          session_id: "claude-1",
+          parent_tool_use_id: null,
+          event,
+        });
+      const header = (messageId: string, toolCallId: string) => {
+        raw({ type: "message_start", message: { id: messageId } });
+        raw({
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: toolCallId,
+            name: "mcp__host__read",
+            input: { path: toolCallId },
+          },
+        });
+      };
+      const end = () => {
+        raw({ type: "content_block_stop", index: 0 });
+        raw({ type: "message_delta", delta: { stop_reason: "tool_use" } });
+        raw({ type: "message_stop" });
+      };
+      header("previous", "a");
+      end();
+      session.park(call("a"));
+      await vi.advanceTimersByTimeAsync(0);
+      const one = outcome(await first),
+        a = toolResult("a");
+      const second = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+            ],
+            input: { kind: "tool-results", results: [a] },
+          }),
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.results.map((result) => result.toolCallId)).toEqual(["a"]);
+      header("current", "b");
+      session.raw({
+        type: "assistant",
+        session_id: "claude-1",
+        parent_tool_use_id: null,
+        uuid: "late-previous",
+        message: {
+          id: "previous",
+          stop_reason: "tool_use",
+          content: [
+            {
+              type: "tool_use",
+              id: "a",
+              name: "mcp__host__read",
+              input: { path: "a" },
+            },
+          ],
+        },
+      });
+      end();
+      session.park(call("b"));
+      let completed: ClaudeRoundEvent[] | undefined;
+      void second.then((events) => {
+        completed = events;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed && outcome(completed)).toMatchObject({
+        reason: "toolUse",
+        content: [call("b")],
+        pendingToolCallIds: ["b"],
+      });
+      expect(session.closeCount).toBe(0);
+      expect(driver.opened).toHaveLength(1);
+    } finally {
+      await runtime.closeAll();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a cost-only final usage report after earlier tool-round accounting", async () => {
     const driver = new OfflineDriver(),
       runtime = createClaudeRuntime({ driver });

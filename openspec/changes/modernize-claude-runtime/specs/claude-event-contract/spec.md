@@ -20,6 +20,11 @@ Consumers SHALL receive text, thinking, signatures and completed assistant conte
 - **WHEN** Claude emits a completed assistant message without preceding deltas
 - **THEN** the same usable assistant content is delivered
 
+#### Scenario: Previous snapshot during a newer stream
+
+- **WHEN** a snapshot of a completed previous assistant message arrives after a newer streamed message starts
+- **THEN** the newer message remains the active target for its unlabelled delta and stop frames, and a parked tool round can finish without losing that message boundary
+
 ### Requirement: Terminal errors and accounting
 
 A turn SHALL finish exactly once with success, error or aborted status, preserving usage, model attribution, available cost, is_error, error subtypes and actionable error content.
