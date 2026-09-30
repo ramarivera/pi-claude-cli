@@ -10,6 +10,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, relative, resolve } from "node:path";
@@ -73,6 +74,17 @@ export function assertSocketCapacity(sandbox) {
   return bytes;
 }
 
+export function configureHostIsolation(host, sandbox) {
+  if (host !== "omp") return;
+  // OMP18.4.4 treats inherited CLAUDE_CONFIG_DIR as a user discovery opt-in.
+  // Its native settings filter these discovery providers before MCP loading.
+  writeFileSync(
+    join(sandbox, "host-isolation.yml"),
+    'disabledProviders: ["claude", "claude-plugins"]\nmcp:\n  enableProjectConfig: false\n',
+    { mode: 0o600 },
+  );
+}
+
 export function executable(name, env = process.env) {
   const found = name.includes("/")
     ? [name]
@@ -115,6 +127,7 @@ export function hostEnvironment(
   }
   delete output.BUN_BE_BUN;
   delete output.CLAUDECODE;
+  delete output.PI_CONFIG_FILES;
   Object.assign(output, {
     PI_CLAUDE_DRIVER: driver,
     PI_CLAUDE_AUTH: mode,
@@ -243,6 +256,8 @@ export function hostArgs(host, sandbox, marker) {
         "--no-lsp",
         "--no-pty",
         "--auto-approve",
+        "--config",
+        join(sandbox, "host-isolation.yml"),
         "--tools",
         "read,write,bash,edit,pcc_sentinel,pcc_slow",
         "--model",
@@ -260,6 +275,7 @@ function processes() {
       const stat = readFileSync(`/proc/${name}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       result.set(Number(name), {
+        name: stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")")),
         state: fields[0],
         parent: Number(fields[1]),
         start: fields[19],
@@ -276,6 +292,7 @@ export class RpcHost {
   responses = [];
   commands = [];
   tracked = new Map();
+  identities = new Map();
   serial = 0;
   closed = false;
   parseError;
@@ -337,7 +354,10 @@ export class RpcHost {
       }
     }
     for (const pid of owned)
-      if (snapshot.has(pid)) this.tracked.set(pid, snapshot.get(pid).start);
+      if (snapshot.has(pid)) {
+        this.tracked.set(pid, snapshot.get(pid).start);
+        this.identities.set(pid, { pid, ...snapshot.get(pid) });
+      }
   }
   rememberBaseline() {
     this.track();
@@ -573,6 +593,7 @@ export class RpcHost {
       );
       return {
         observedPids: [...this.tracked.keys()],
+        observedProcesses: [...this.identities.values()],
         forcedChildren: [...forcedChildren],
         hostRequiredKill,
         survivors: [],

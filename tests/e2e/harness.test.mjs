@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { publicAssistant, publicStats, textProof } from "./diagnostics.mjs";
@@ -8,7 +8,9 @@ import {
   ROOT,
   RpcHost,
   assertSocketCapacity,
+  configureHostIsolation,
   executable,
+  hostArgs,
   hostEnvironment,
   scratchDirectory,
   scratchRoot,
@@ -227,6 +229,7 @@ test("login isolation retains official config location and clears alternative au
     BUN_BE_BUN: "1",
     PI_CLAUDE_EFFORT: "high",
     PI_CLAUDE_MCP_CONFIG: "/unrelated-config",
+    PI_CONFIG_FILES: "/unrelated-host-config",
   });
   assert.equal(env.CLAUDE_CONFIG_DIR, "/official-config");
   for (const name of [
@@ -239,6 +242,7 @@ test("login isolation retains official config location and clears alternative au
     "BUN_BE_BUN",
     "PI_CLAUDE_EFFORT",
     "PI_CLAUDE_MCP_CONFIG",
+    "PI_CONFIG_FILES",
   ])
     assert.equal(env[name], undefined, name);
   assert.equal(env.PI_CLAUDE_DRIVER, "sdk");
@@ -271,6 +275,32 @@ test("executable prerequisite rejects missing paths", () => {
     () => executable("/pcc-missing-executable"),
     /Missing executable prerequisite/,
   );
+});
+
+test("OMP native discovery isolation preserves explicit extensions and native tools", () => {
+  const sandbox = scratchDirectory("l-");
+  const path = join(sandbox, "host-isolation.yml");
+  try {
+    configureHostIsolation("pi", sandbox);
+    assert.equal(existsSync(path), false);
+    configureHostIsolation("omp", sandbox);
+    assert.equal(
+      readFileSync(path, "utf8"),
+      'disabledProviders: ["claude", "claude-plugins"]\nmcp:\n  enableProjectConfig: false\n',
+    );
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    const args = hostArgs("omp", sandbox, "synthetic system marker");
+    assert.equal(args[args.indexOf("--config") + 1], path);
+    assert.ok(args.includes(join(ROOT, "entrypoints/omp.ts")));
+    assert.ok(args.includes(join(ROOT, "tests/e2e/omp-tools.ts")));
+    assert.equal(
+      args[args.indexOf("--tools") + 1],
+      "read,write,bash,edit,pcc_sentinel,pcc_slow",
+    );
+    assert.equal(hostArgs("pi", sandbox, "marker").includes("--config"), false);
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });
 
 test("scratch defaults and Linux socket capacity obey the project storage rule", () => {
