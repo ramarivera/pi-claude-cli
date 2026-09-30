@@ -69,7 +69,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 5. Pi lane
 
-- [ ] 5.1 Implement current Pi provider input and stream projection (`pcc-pi-stream`; lane `pi`; 90 min).
+- [x] 5.1 Implement current Pi provider input and stream projection (`pcc-pi-stream`; lane `pi`; 90 min).
   - Capabilities: `pi-adapter`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Current transcript prompt/tools, cwd host context, correct callbacks and AssistantMessage errors/usage; active exposure policy preserved; provider-ready tools and metadata project without SDK/OMP imports; entrypoint factory defined.
@@ -93,7 +93,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
 
 ## 7. Verification lane
 
-- [ ] 7.1 Build versioned fixture catalog and coverage matrix (`pcc-fixtures`; lane `verification`; 90 min).
+- [x] 7.1 Build versioned fixture catalog and coverage matrix (`pcc-fixtures`; lane `verification`; 90 min).
   - Capabilities: `verification-suite`, `claude-event-contract`.
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: Sanitized recordings with provenance/license/CLI-SDK-host versions/flags plus labelled synthetic rare-event cases; old test-to-replacement matrix; coverage inventory includes payload categories and concrete researched regressions; paid captures only behind approved live gate.
