@@ -250,6 +250,69 @@ async function started(
 
 describe("Claude runtime session ownership (offline)", () => {
   it.each([false, true])(
+    "rejects unsupported steering before replay when a parked session exists: %s",
+    async (parked) => {
+      const scripted = new OfflineDriver();
+      const driver: ClaudeDriver = {
+        kind: scripted.kind,
+        capabilities: { ...scripted.capabilities, steering: "unsupported" },
+        openSession: (r) => scripted.openSession(r),
+      };
+      const runtime = createClaudeRuntime({ driver });
+      scripted.setup = (session) => {
+        session.onPrompt = () => {
+          step(session, "tools", [call("a"), call("b")]);
+          session.park(call("a"));
+          session.park(call("b"));
+        };
+      };
+      if (parked) {
+        expect(
+          outcome(await collect(runtime.streamRound(request()))).reason,
+        ).toBe("toolUse");
+      }
+      const steering: TranscriptMessage = {
+        role: "user",
+        content: [{ type: "text", text: "change direction" }],
+      };
+      const result = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "steer",
+              transcript: [
+                user,
+                assistant([call("a"), call("b")], "toolUse"),
+                { role: "tool_result", ...toolResult("b") },
+                steering,
+                { role: "tool_result", ...toolResult("a") },
+              ],
+              input: {
+                kind: "tool-results",
+                results: [toolResult("b"), toolResult("a")],
+                steering: steering.content,
+              },
+            }),
+          ),
+        ),
+      );
+      expect(result).toMatchObject({
+        reason: "error",
+        error: {
+          code: "unsupported",
+          message: "Selected driver doesn't support steering",
+        },
+      });
+      expect(scripted.opened).toHaveLength(parked ? 1 : 0);
+      if (parked) {
+        expect(scripted.sessions[0].prompts).toHaveLength(1);
+        expect(scripted.sessions[0].results).toHaveLength(0);
+        expect(scripted.sessions[0].closeCount).toBe(1);
+      }
+      await runtime.closeAll();
+    },
+  );
+  it.each([false, true])(
     "submits a current user once and keeps a resident pump when the host retains empty streamed text: %s",
     async (elideEmpty) => {
       const driver = new OfflineDriver();
