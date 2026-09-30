@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fixtureVersion": "1.0.0",
+  "fixtureVersion": "1.1.0",
   "provenance": {
     "kind": "synthetic",
     "description": "Hand-authored protocol examples; no live capture or external fixture contents reused.",
@@ -158,7 +158,8 @@
         "snapshot",
         "dedupe",
         "usage",
-        "terminal-once"
+        "terminal-once",
+        "bounded-core-diagnostic"
       ],
       "frames": [
         {
@@ -182,6 +183,25 @@
               "type": "message_start",
               "messageId": "text-message",
               "model": "fixture-model"
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-start",
+              "data": {
+                "messageId": "text-message",
+                "previousActiveMessageId": null,
+                "activeMessageId": "text-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": []
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "text-message"
+              }
             }
           ]
         },
@@ -280,6 +300,35 @@
                   "text": "Hello"
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "text-message",
+                "previousActiveMessageId": "text-message",
+                "activeMessageId": "text-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 1,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "text",
+                    "ended": true
+                  }
+                ],
+                "snapshotId": "block-0",
+                "snapshotKnownMessage": true,
+                "snapshotFull": false,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "text-message"
+              }
             }
           ]
         },
@@ -378,6 +427,40 @@
                   "text": " world"
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "text-message",
+                "previousActiveMessageId": "text-message",
+                "activeMessageId": "text-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 2,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "text",
+                    "ended": true
+                  },
+                  {
+                    "index": 1,
+                    "type": "text",
+                    "ended": true
+                  }
+                ],
+                "snapshotId": "block-1",
+                "snapshotKnownMessage": true,
+                "snapshotFull": false,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "text-message"
+              }
             }
           ]
         },
@@ -417,6 +500,40 @@
                   "text": " world"
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "text-message",
+                "previousActiveMessageId": "text-message",
+                "activeMessageId": "text-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 2,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "text",
+                    "ended": true
+                  },
+                  {
+                    "index": 1,
+                    "type": "text",
+                    "ended": true
+                  }
+                ],
+                "snapshotId": "full-text",
+                "snapshotKnownMessage": true,
+                "snapshotFull": true,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "text-message"
+              }
             }
           ]
         },
@@ -480,6 +597,36 @@
                 "cacheReadTokens": 0,
                 "cacheWriteTokens": 0
               }
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-stop",
+              "data": {
+                "messageId": "text-message",
+                "previousActiveMessageId": "text-message",
+                "activeMessageId": "text-message",
+                "ended": true,
+                "stopReasonPresent": true,
+                "blockCount": 2,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "text",
+                    "ended": true
+                  },
+                  {
+                    "index": 1,
+                    "type": "text",
+                    "ended": true
+                  }
+                ]
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "text-message"
+              }
             }
           ]
         },
@@ -533,7 +680,13 @@
     },
     {
       "id": "snapshot-only",
-      "coverage": ["full-assistant", "snapshot", "images", "repeated-text"],
+      "coverage": [
+        "full-assistant",
+        "snapshot",
+        "images",
+        "repeated-text",
+        "bounded-core-diagnostic"
+      ],
       "frames": [
         {
           "payload": {
@@ -584,6 +737,45 @@
                   "data": "aW1hZ2U="
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "full-message",
+                "previousActiveMessageId": null,
+                "activeMessageId": "full-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 3,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "text",
+                    "ended": true
+                  },
+                  {
+                    "index": 1,
+                    "type": "text",
+                    "ended": true
+                  },
+                  {
+                    "index": 2,
+                    "type": "image",
+                    "ended": true
+                  }
+                ],
+                "snapshotId": "full",
+                "snapshotKnownMessage": false,
+                "snapshotFull": true,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "full-message"
+              }
             }
           ]
         },
@@ -613,7 +805,13 @@
     },
     {
       "id": "thinking-signatures",
-      "coverage": ["thinking", "signature", "redacted-thinking", "dedupe"],
+      "coverage": [
+        "thinking",
+        "signature",
+        "redacted-thinking",
+        "dedupe",
+        "bounded-core-diagnostic"
+      ],
       "frames": [
         {
           "payload": {
@@ -631,6 +829,25 @@
           "expected": [
             {
               "type": "message_start"
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-start",
+              "data": {
+                "messageId": "thinking-message",
+                "previousActiveMessageId": null,
+                "activeMessageId": "thinking-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": []
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "thinking-message"
+              }
             }
           ]
         },
@@ -763,6 +980,40 @@
                   "redacted": true
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "thinking-message",
+                "previousActiveMessageId": "thinking-message",
+                "activeMessageId": "thinking-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 2,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "thinking",
+                    "ended": true
+                  },
+                  {
+                    "index": 1,
+                    "type": "thinking",
+                    "ended": true
+                  }
+                ],
+                "snapshotId": "thinking-full",
+                "snapshotKnownMessage": true,
+                "snapshotFull": true,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "thinking-message"
+              }
             }
           ]
         },
@@ -1325,7 +1576,13 @@
     },
     {
       "id": "subagent-task-isolation",
-      "coverage": ["subagent", "task", "ownership", "attribution"],
+      "coverage": [
+        "subagent",
+        "task",
+        "ownership",
+        "attribution",
+        "bounded-core-diagnostic"
+      ],
       "frames": [
         {
           "payload": {
@@ -1419,6 +1676,25 @@
             {
               "type": "message_start",
               "messageId": "main"
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-start",
+              "data": {
+                "messageId": "main",
+                "previousActiveMessageId": null,
+                "activeMessageId": "main",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": []
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "main"
+              }
             }
           ]
         },
@@ -1441,6 +1717,25 @@
               "messageId": "child",
               "attribution": {
                 "parentToolUseId": "fixture-parent"
+              }
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-start",
+              "data": {
+                "messageId": "child",
+                "previousActiveMessageId": null,
+                "activeMessageId": "child",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": []
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": "fixture-parent",
+                "messageId": "child"
               }
             }
           ]
@@ -1478,6 +1773,29 @@
               "attribution": {
                 "parentToolUseId": "fixture-parent",
                 "toolUseId": "child-tool"
+              }
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "child",
+                "previousActiveMessageId": "child",
+                "activeMessageId": "child",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": [],
+                "snapshotId": "child-snapshot",
+                "snapshotKnownMessage": true,
+                "snapshotFull": false,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": "fixture-parent",
+                "messageId": "child"
               }
             }
           ]
@@ -1552,7 +1870,12 @@
     },
     {
       "id": "tool-ownership",
-      "coverage": ["tool-call", "native-schema", "ownership"],
+      "coverage": [
+        "tool-call",
+        "native-schema",
+        "ownership",
+        "bounded-core-diagnostic"
+      ],
       "frames": [
         {
           "payload": {
@@ -1639,6 +1962,36 @@
                   }
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "tools",
+                "previousActiveMessageId": null,
+                "activeMessageId": "tools",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 1,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "tool_call",
+                    "ended": true,
+                    "toolCallId": "host-tool"
+                  }
+                ],
+                "snapshotId": "tools-snapshot",
+                "snapshotKnownMessage": false,
+                "snapshotFull": true,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "tools"
+              }
             }
           ]
         },
@@ -1757,7 +2110,12 @@
     },
     {
       "id": "malformed-required",
-      "coverage": ["malformed", "required-id", "tool-correlation"],
+      "coverage": [
+        "malformed",
+        "required-id",
+        "tool-correlation",
+        "bounded-core-diagnostic"
+      ],
       "frames": [
         {
           "payload": null,
@@ -1825,6 +2183,29 @@
               "error": {
                 "code": "tool-correlation"
               }
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "bad-tool",
+                "previousActiveMessageId": null,
+                "activeMessageId": "bad-tool",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": [],
+                "snapshotId": "bad-tool-snapshot",
+                "snapshotKnownMessage": false,
+                "snapshotFull": false,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "bad-tool"
+              }
             }
           ]
         },
@@ -1889,7 +2270,8 @@
         "terminal-once",
         "resident",
         "reset",
-        "late-content"
+        "late-content",
+        "bounded-core-diagnostic"
       ],
       "frames": [
         {
@@ -1908,6 +2290,25 @@
           "expected": [
             {
               "type": "message_start"
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-start",
+              "data": {
+                "messageId": "abort-message",
+                "previousActiveMessageId": null,
+                "activeMessageId": "abort-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": []
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "abort-message"
+              }
             }
           ]
         },
@@ -1990,6 +2391,25 @@
           "expected": [
             {
               "type": "message_start"
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-message-start",
+              "data": {
+                "messageId": "resident-message",
+                "previousActiveMessageId": null,
+                "activeMessageId": "resident-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 0,
+                "blocks": []
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "resident-message"
+              }
             }
           ]
         },
@@ -2020,6 +2440,35 @@
                   "text": "next turn"
                 }
               ]
+            },
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "core-assistant-snapshot",
+              "data": {
+                "messageId": "resident-message",
+                "previousActiveMessageId": "resident-message",
+                "activeMessageId": "resident-message",
+                "ended": false,
+                "stopReasonPresent": false,
+                "blockCount": 1,
+                "blocks": [
+                  {
+                    "index": 0,
+                    "type": "text",
+                    "ended": true
+                  }
+                ],
+                "snapshotId": "resident-snapshot",
+                "snapshotKnownMessage": true,
+                "snapshotFull": false,
+                "snapshotStopReasonPresent": false
+              },
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "parentToolUseId": null,
+                "messageId": "resident-message"
+              }
             }
           ]
         },

@@ -11,7 +11,7 @@ const catalog = loadFixtureCatalog();
 describe("versioned synthetic Claude protocol fixtures (offline)", () => {
   it("declares versions, flags and truthful provenance", () => {
     expect(catalog.schemaVersion).toBe(1);
-    expect(catalog.fixtureVersion).toBe("1.0.0");
+    expect(catalog.fixtureVersion).toBe("1.1.0");
     expect(catalog.provenance).toMatchObject({
       kind: "synthetic",
       license: "MIT",
@@ -44,6 +44,7 @@ describe("versioned synthetic Claude protocol fixtures (offline)", () => {
       "terminal-once",
       "dedupe",
       "native-schema",
+      "bounded-core-diagnostic",
     ])
       expect(covered, `Missing ${family} scenario`).toContain(family);
   });
@@ -61,6 +62,18 @@ describe("versioned synthetic Claude protocol fixtures (offline)", () => {
       expect(events, `${fixture.id} frame ${index}`).toMatchObject(
         frame.expected,
       );
+      for (const [eventIndex, expected] of frame.expected.entries()) {
+        if (
+          expected.type === "observation" &&
+          typeof expected.subtype === "string" &&
+          expected.subtype.startsWith("core-")
+        )
+          // Full equality rejects unexpected content/input fields in safe metadata.
+          expect(
+            events[eventIndex],
+            `${fixture.id} frame ${index} diagnostic ${eventIndex}`,
+          ).toEqual(expected);
+      }
       all.push(...events);
     }
     expect(
