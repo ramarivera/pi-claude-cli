@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ProviderConfig,
+} from "@oh-my-pi/pi-coding-agent";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type {
   ClaudeRuntime,
@@ -82,7 +86,16 @@ describe("OMP discovery and native registration", () => {
     const configuration = readRuntimeConfiguration({ PI_CLAUDE_DRIVER: "sdk" });
     const runtimeFactory = vi.fn(async () => backend);
     registerOmpAdapter(host.api, { configuration, runtimeFactory });
-    expect(runtimeFactory).toHaveBeenCalledWith(configuration);
+    expect(runtimeFactory).not.toHaveBeenCalled();
+    const start = host.on.mock.calls.find(
+      ([name]) => name === "session_start",
+    )?.[1] as (event: unknown, ctx: ExtensionContext) => void;
+    start({ type: "session_start" }, {
+      cwd: "/native-cwd",
+      agent: { kind: "main", id: "Main", name: "main", depth: 0 },
+      sessionManager: { getSessionId: () => "host" },
+      ui: { setStatus: vi.fn() },
+    } as unknown as ExtensionContext);
     expect(host.provider().models?.[0]).toMatchObject({
       id: "claude-haiku-4-5",
       reasoning: false,
@@ -107,6 +120,7 @@ describe("OMP discovery and native registration", () => {
     expect((await nativeStream?.result())?.content).toEqual([
       { type: "text", text: "done" },
     ]);
+    expect(runtimeFactory).toHaveBeenCalledWith(configuration);
     expect(requests[0]).toMatchObject({
       cwd: "/native-cwd",
       systemPrompt: "hook",

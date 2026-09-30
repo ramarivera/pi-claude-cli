@@ -1,0 +1,24 @@
+# Native OMP adapter
+
+`entrypoints/omp.ts` registers `pi-claude-cli` through OMP 18.4.4's native extension API. The default entrypoint calls `registerOmpAdapter(api, { configuration?, runtimeFactory? })`; production delegates to the shared runtime composition. There are no Pi imports or host-tool rename tables.
+
+The adapter reads effective normalized JSON schemas from the current provider `context.tools`. Native names, schemas, descriptions, grammar, wire-name aliases and examples remain intact, including hashline/apply-patch/replacement editing, separate glob/semantic find, and bash timeout seconds. Callable inventory schemas and provider-hosted tools fail explicitly. MCP structured results, native details, metadata, thinking signatures and assistant terminal state survive transcript normalization.
+
+Model metadata comes from the native AI module retained by OMP's extension loader. The published AI typings omit the loader's catalog re-export, so the adapter uses a source-verified, type-only catalog view and checks the function at registration. Runtime imports use the host's AI/coding-agent module instances. The exact version guard rejects other OMP releases.
+
+Session identity preserves the main host's authoritative session ID; distinct provider routes and `ctx.agent` identities are namespaced with the host ID. Ordinary leaf changes preserve branch identity. Compaction, tree navigation, branch, switch/fork and reload explicitly invalidate or retire the affected runtime state. Native `providerSessionState.close()` closes only its owning logical agent; shutdown waits for owned cleanup. Aborting during a parked host tool still closes the Claude query because the host-turn listener survives the completed provider tool round. Final responses detach it.
+
+OMP's managed `setTimeout`/`clearTimer` honor first-event and stream-idle deadlines, including defaults supplied by `settings-stream-fn.ts`. Zero disables each bound; a parked tool boundary stops provider stream timers. Timeout results are errors, user cancellation results are aborted, and each stream emits one native terminal. Native output token bounds map to the shared runtime setting. Explicit sampling, fetch, HTTP-header and token-thinking-budget overrides fail because neither Claude driver implements those controls. Native default retry/loop/visibility controls remain accepted; retries and thinking are owned by Claude.
+
+`onPayload` observes a detached request with auth and configured MCP credentials redacted. Replacements can change model, cwd, system prompt, prompt content or an exact effective-tool subset. They can't replace auth, settings, session or correlated history/results. Prompt replacements update the trailing transcript prompt as well.
+
+`onResponse` fires once per round after an actual transport event, before content projection. It reports status `0`, driver/transport headers and an authoritative initialized or attributed Claude session ID when available. Metadata labels history replay, unsupported live steering and Claude's reported USD estimate. Incremental `round_end` usage is the host allocation; cumulative turn usage isn't added again. Unknown cost components stay zero.
+
+OMP has no generic provider-stream-event extension hook. Claude task/progress/status observations use `ctx.ui.setStatus` and the native extension event bus:
+
+- `pi-claude-cli:observation`: Claude ownership, host session/agent identity, and the normalized event with its attribution.
+- `pi-claude-cli:capability`: explicit unsupported live-steering observation.
+
+Claude internal tasks never become OMP-native task executions. Neither current driver claims OMP's queued live steering. Already-dequeued boundary steering remains explicit in the neutral request so the runtime can reject it without new inference or tool-result loss.
+
+Offline tests exercise the actual native AssistantMessageEventStream/error classifier with Bun-only import barrels redirected to native Node-safe exports. Actual shared-runtime tests prove late MCP parking preserves Claude block order, empty text elision preserves residency, structured tool results reach the same query, and parked abort closes the owned driver. These are offline behavioral proofs; authenticated compiled-host inference belongs to the root's separate live suite.
