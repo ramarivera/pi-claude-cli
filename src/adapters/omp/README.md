@@ -18,6 +18,7 @@ OMP has no generic provider-stream-event extension hook. Claude task/progress/st
 
 - `pi-claude-cli:observation`: Claude ownership, host session/agent identity, and the normalized event with its attribution.
 - `pi-claude-cli:capability`: explicit unsupported live-steering observation.
+- `pi-claude-cli:diagnostic`: metadata-only projection of `core-message-start`, `core-message-stop`, `core-assistant-snapshot` and `host-mcp-park`. It retains known message/tool/session IDs, ended flags, block metadata and runtime boundary counts/ID sets. Every nested object and host identity is whitelisted; arrays are capped at 32 entries and IDs at 128 characters. Unknown fields/subtypes and raw text, arguments, schemas, credentials and errors are dropped. Diagnostics never update UI status.
 
 Claude internal tasks never become OMP-native task executions. Neither current driver claims OMP's queued live steering. Already-dequeued boundary steering remains explicit in the neutral request so the runtime can reject it without new inference or tool-result loss.
 
