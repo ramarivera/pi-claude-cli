@@ -73,6 +73,48 @@ function collectContent(
 }
 
 describe("shared Claude normalizer (offline)", () => {
+  it.each([true, false])(
+    "keeps a newer streamed message active when an earlier message receives a late snapshot (ended=%s)",
+    (ended) => {
+      const n = make();
+      n.normalize(
+        stream({ type: "message_start", message: { id: "previous" } }),
+      );
+      if (ended) n.normalize(stream({ type: "message_stop" }));
+      n.normalize(
+        stream({ type: "message_start", message: { id: "current" } }),
+      );
+      n.normalize(
+        stream({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        }),
+      );
+      n.normalize(
+        snapshot("previous", "late", [{ type: "text", text: "old" }]),
+      );
+      expect(
+        n.normalize(
+          stream({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "current text" },
+          }),
+        ),
+      ).toContainEqual(
+        expect.objectContaining({
+          type: "content_delta",
+          messageId: "current",
+          delta: { kind: "text", text: "current text" },
+        }),
+      );
+      expect(n.normalize(stream({ type: "message_stop" }))).toContainEqual(
+        expect.objectContaining({ type: "message_end", messageId: "current" }),
+      );
+    },
+  );
+
   it("projects authoritative initialization and failed MCP status before results", () => {
     const n = make();
     const events = n.normalize({

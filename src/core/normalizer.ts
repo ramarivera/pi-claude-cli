@@ -537,7 +537,10 @@ export function createClaudeEventNormalizer(
           snapshotKey = `${ctx}:${snapshotId}`;
         if (snapshotId && snapshots.has(snapshotKey)) return [];
         if (snapshotId) snapshots.add(snapshotKey);
-        active.set(ctx, id);
+        // A late canonical snapshot can reconcile a known older message while a
+        // newer message is streaming. Don't redirect its unlabelled deltas.
+        const activeId = active.get(ctx);
+        if (!existing || !activeId || activeId === id) active.set(ctx, id);
         const message = state(key, string(raw.model)),
           attr = { ...a, messageId: id };
         const parsed: AssistantContent[] = [],
