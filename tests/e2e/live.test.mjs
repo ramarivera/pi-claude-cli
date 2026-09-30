@@ -18,6 +18,7 @@ import {
   ROOT,
   RpcHost,
   assertSocketCapacity,
+  configureHostIsolation,
   hostArgs,
   hostEnvironment,
   preflight,
@@ -252,6 +253,7 @@ for (const name of CASES) {
       try {
         receipt.socketPathBytes = assertSocketCapacity(sandbox);
         mkdirSync(join(sandbox, "t"));
+        configureHostIsolation(hostKind, sandbox);
         writeFileSync(join(sandbox, "fixture.txt"), "before\n");
         const nonce = `nonce-${randomUUID()}`;
         const marker = `SYSTEM-${randomUUID()}`;
