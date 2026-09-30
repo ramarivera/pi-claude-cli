@@ -249,48 +249,58 @@ async function started(
 }
 
 describe("Claude runtime session ownership (offline)", () => {
-  it("submits a current user once and keeps a resident pump after a completed turn", async () => {
-    const driver = new OfflineDriver();
-    driver.setup = (session) => {
-      session.onPrompt = () => {
-        step(session, `m${session.prompts.length}`, [
-          { type: "text", text: "hello" },
-        ]);
-        success(session);
+  it.each([false, true])(
+    "submits a current user once and keeps a resident pump when the host retains empty streamed text: %s",
+    async (elideEmpty) => {
+      const driver = new OfflineDriver();
+      driver.setup = (session) => {
+        session.onPrompt = () => {
+          step(session, `m${session.prompts.length}`, [
+            ...(elideEmpty ? [{ type: "text" as const, text: "" }] : []),
+            { type: "text", text: "hello" },
+          ]);
+          success(session);
+        };
       };
-    };
-    const runtime = createClaudeRuntime({ driver });
-    const first = outcome(
-      await collect(runtime.streamRound(request({ transcript: [user] }))),
-    );
-    expect(first.content).toEqual([{ type: "text", text: "hello" }]);
-    expect(driver.opened[0].identity.history.messages).toEqual([]);
-    expect(driver.opened[0].resume.mode).toBe("fresh");
-    const nextUser: TranscriptMessage = {
-      role: "user",
-      content: [{ type: "text", text: "next" }],
-    };
-    const second = outcome(
-      await collect(
-        runtime.streamRound(
-          request({
-            roundId: "r2",
-            transcript: [user, assistant(first.content), nextUser],
-            input: { kind: "prompt", content: nextUser.content },
-          }),
+      const runtime = createClaudeRuntime({ driver });
+      const first = outcome(
+        await collect(runtime.streamRound(request({ transcript: [user] }))),
+      );
+      expect(first.content).toEqual([{ type: "text", text: "hello" }]);
+      expect(driver.opened[0].identity.history.messages).toEqual([]);
+      expect(driver.opened[0].resume.mode).toBe("fresh");
+      const nextUser: TranscriptMessage = {
+        role: "user",
+        content: [{ type: "text", text: "next" }],
+      };
+      const second = outcome(
+        await collect(
+          runtime.streamRound(
+            request({
+              roundId: "r2",
+              transcript: [
+                user,
+                assistant([
+                  ...(elideEmpty ? [{ type: "text" as const, text: "" }] : []),
+                  ...first.content,
+                ]),
+                nextUser,
+              ],
+              input: { kind: "prompt", content: nextUser.content },
+            }),
+          ),
         ),
-      ),
-    );
-    expect(second.reason).toBe("stop");
-    expect(driver.opened).toHaveLength(1);
-    expect(driver.sessions[0].prompts.map((prompt) => prompt.content)).toEqual([
-      user.content,
-      nextUser.content,
-    ]);
-    expect(driver.sessions[0].closeCount).toBe(0);
-    await runtime.closeAll();
-    expect(driver.sessions[0].closeCount).toBe(1);
-  });
+      );
+      expect(second.reason).toBe("stop");
+      expect(driver.opened).toHaveLength(1);
+      expect(
+        driver.sessions[0].prompts.map((prompt) => prompt.content),
+      ).toEqual([user.content, nextUser.content]);
+      expect(driver.sessions[0].closeCount).toBe(0);
+      await runtime.closeAll();
+      expect(driver.sessions[0].closeCount).toBe(1);
+    },
+  );
 
   it("replays prior labelled history while excluding an identical current user input", async () => {
     const driver = new OfflineDriver();

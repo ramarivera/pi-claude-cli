@@ -65,6 +65,10 @@ function environment(
   env.ENABLE_CLAUDEAI_MCP_SERVERS = "0";
   env.MCP_TIMEOUT = String(request.settings.toolResultTimeoutMs);
   env.MCP_TOOL_TIMEOUT = String(request.settings.toolResultTimeoutMs);
+  // Claude 2.1.280 otherwise truncates native MCP instructions at 2048 characters.
+  env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(
+    Math.max(2048, ...request.tools.map((tool) => tool.description.length)),
+  );
   if (request.settings.maxOutputTokens !== undefined)
     env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(
       request.settings.maxOutputTokens,
@@ -700,7 +704,7 @@ class CliSession implements ClaudeDriverSession {
     });
   }
   async submitPrompt(prompt: DriverPrompt): Promise<void> {
-    if (prompt.priority && prompt.priority !== "now")
+    if (prompt.priority && prompt.priority !== "next")
       throw new Error("CLI steering priorities unsupported");
     if (this.active) throw new Error("CLI session already has an active turn");
     this.turnId = prompt.turnId;
