@@ -53,6 +53,178 @@ function object(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function safeId(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 128 &&
+    !/\p{Cc}/u.test(value)
+    ? value
+    : undefined;
+}
+function safeCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function metadata(
+  value: unknown,
+  ids: readonly string[],
+  flags: readonly string[] = [],
+  counts: readonly string[] = [],
+): Record<string, unknown> {
+  const source = object(value),
+    result: Record<string, unknown> = {};
+  for (const key of ids) {
+    const id = safeId(source[key]);
+    if (id !== undefined) result[key] = id;
+  }
+  for (const key of flags)
+    if (typeof source[key] === "boolean") result[key] = source[key];
+  for (const key of counts)
+    if (safeCount(source[key])) result[key] = source[key];
+  return result;
+}
+function boundedIds(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.slice(0, 32).flatMap((entry) => {
+        const id = safeId(entry);
+        return id === undefined ? [] : [id];
+      })
+    : undefined;
+}
+function boundedObjects(
+  value: unknown,
+  project: (entry: unknown) => Record<string, unknown>,
+): Record<string, unknown>[] | undefined {
+  return Array.isArray(value)
+    ? value
+        .slice(0, 32)
+        .filter(
+          (entry) =>
+            entry !== null &&
+            typeof entry === "object" &&
+            !Array.isArray(entry),
+        )
+        .map(project)
+    : undefined;
+}
+
+/** Independently whitelist the dedicated safe bus; raw spreads are forbidden. */
+export function nativeDiagnostic(value: unknown): void {
+  const envelope = object(value),
+    event = object(envelope.event);
+  if (
+    envelope.owner !== "claude" ||
+    event.type !== "observation" ||
+    event.family !== "diagnostic" ||
+    !safeCount(event.sequence) ||
+    ![
+      "core-message-start",
+      "core-message-stop",
+      "core-assistant-snapshot",
+      "host-mcp-park",
+    ].includes(String(event.subtype))
+  )
+    return;
+  const source = object(event.data);
+  const data =
+    event.subtype === "host-mcp-park"
+      ? metadata(source, ["toolUseId", "toolName"])
+      : metadata(
+          source,
+          ["messageId", "snapshotId"],
+          [
+            "ended",
+            "stopReasonPresent",
+            "snapshotKnownMessage",
+            "snapshotFull",
+            "snapshotStopReasonPresent",
+          ],
+          ["blockCount"],
+        );
+  if (event.subtype === "host-mcp-park") {
+    if (source.serverName === "host") data.serverName = "host";
+  } else {
+    for (const key of ["previousActiveMessageId", "activeMessageId"]) {
+      const id = safeId(source[key]);
+      if (id !== undefined || source[key] === null) data[key] = id ?? null;
+    }
+    const blocks = boundedObjects(source.blocks, (entry) => {
+      const block = metadata(entry, ["toolCallId"], ["ended"], ["index"]);
+      const type = object(entry).type;
+      if (["text", "thinking", "image", "tool_call"].includes(String(type)))
+        block.type = type;
+      return block;
+    });
+    if (blocks !== undefined) data.blocks = blocks;
+  }
+  if (
+    source.runtimeBoundary !== null &&
+    typeof source.runtimeBoundary === "object" &&
+    !Array.isArray(source.runtimeBoundary)
+  ) {
+    const boundarySource = object(source.runtimeBoundary);
+    const boundary = metadata(
+      boundarySource,
+      [],
+      ["roundDone"],
+      ["messageCount", "proposalCount", "parkedCount", "deliveredCount"],
+    );
+    const messages = boundedObjects(boundarySource.messages, (entry) => {
+      const message = metadata(entry, ["messageId"], ["ended"], ["blockCount"]);
+      const calls = boundedIds(object(entry).toolCallIds);
+      if (calls !== undefined) message.toolCallIds = calls;
+      return message;
+    });
+    if (messages !== undefined) boundary.messages = messages;
+    for (const key of [
+      "unendedMessageIds",
+      "proposalIds",
+      "unparkedProposalIds",
+      "parkedIds",
+      "deliveredIds",
+    ]) {
+      const ids = boundedIds(boundarySource[key]);
+      if (ids !== undefined) boundary[key] = ids;
+    }
+    data.runtimeBoundary = boundary;
+  }
+  const attribution = metadata(event.attribution, [
+    "claudeSessionId",
+    "turnId",
+    "messageId",
+    "parentToolUseId",
+    "toolUseId",
+    "taskId",
+    "agentId",
+  ]);
+  if (object(event.attribution).parentToolUseId === null)
+    attribution.parentToolUseId = null;
+  const hostAgent = metadata(
+    envelope.hostAgent,
+    ["id", "parentId"],
+    [],
+    ["depth"],
+  );
+  const kind = object(envelope.hostAgent).kind;
+  if (kind === "main" || kind === "sub") hostAgent.kind = kind;
+  record("native-diagnostic", {
+    owner: "claude",
+    hostSession: metadata(envelope.hostSession, [
+      "sessionId",
+      "branchId",
+      "historyRevision",
+    ]),
+    hostAgent,
+    event: {
+      type: "observation",
+      family: "diagnostic",
+      subtype: event.subtype,
+      sequence: event.sequence,
+      attribution,
+      data,
+    },
+  });
+}
+
 /** Metadata only: never persist observation data, tool arguments or error details. */
 export function normalizedObservation(value: unknown): void {
   const envelope = object(value);
