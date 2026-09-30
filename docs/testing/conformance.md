@@ -1,0 +1,13 @@
+# Offline production conformance
+
+Run `npx vitest run tests/conformance --reporter=dot`. The suite includes the versioned synthetic envelopes, recorded initialization controls, 46 shared production driver/core checks and 12 native host factory checks across Pi/OMP × CLI/SDK.
+
+`tests/support/production-drivers.ts` constructs the production CLI and SDK drivers with `createClaudeEventNormalizer`. CLI runs an isolated authored child process over real JSONL and the driver's real stdio MCP endpoint. SDK uses its public `loadSdk/query` seam to supply authored inference traffic and connects an official MCP client to the production SDK MCP server. Both inference substitutes execute the same scenario definition. They make no authenticated Claude request.
+
+The shared assertions cover delta/snapshot deduplication, authoritative resident identity, monotonic events and exactly one terminal, intact system prompt/native schemas/arguments, parallel calls/results in reverse order, early results, identical/conflicting duplicates, `isError` cancellation, no kill at a tool boundary, selected-driver failure, independent runtime ownership, saved-host-history replay, and complete historical roles/images/thinking/signatures/calls/structured results. Abort cases run during active inference and during an unfinished message with parked handlers. Cleanup verifies closed queries, dead owned CLI processes and deleted private CLI resources.
+
+Native factory checks use the actual Pi 0.99.1 and OMP 18.4.4 type contracts, catalogs and native stream implementations, then inject the production runtime/driver. The simulated extension API boundary captures registered providers and lifecycle callbacks. OMP's Bun-only provider barrel is replaced in Node by its actual stream/catalog modules; its version comes from installed package metadata. Native schema fixtures are representative typed host tools; their grammar metadata is preserved, and real OMP hashline execution remains an authenticated host E2E requirement.
+
+Raw MCP listing/results are checked at the transport boundary because normalized observations deliberately bound deep diagnostic data. Host-only details aren't forwarded as model-directed MCP results. The native factory suite asserts semantic text/system prompts, unchanged canonical tool IDs and structured result continuation, registration, and transport/session response observations.
+
+These are deterministic regression tests, not live inference evidence. The four actual host RPC combinations, real login/billing, runtime captures, native edit effects, host session restoration and cancellation/resource evidence are verified by the separately gated live harness. See [the legacy coverage map](./legacy-coverage-map.md) before deleting old tests.

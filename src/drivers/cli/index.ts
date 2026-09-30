@@ -65,6 +65,8 @@ function environment(
   env.ENABLE_CLAUDEAI_MCP_SERVERS = "0";
   env.MCP_TIMEOUT = String(request.settings.toolResultTimeoutMs);
   env.MCP_TOOL_TIMEOUT = String(request.settings.toolResultTimeoutMs);
+  if (request.settings.effort !== undefined)
+    env.CLAUDE_CODE_EFFORT_LEVEL = request.settings.effort;
   // Claude 2.1.280 otherwise truncates native MCP instructions at 2048 characters.
   env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(
     Math.max(2048, ...request.tools.map((tool) => tool.description.length)),

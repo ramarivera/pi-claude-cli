@@ -92,10 +92,14 @@ function transport() {
   };
 }
 
-async function open(t = transport(), r = request()) {
+async function open(
+  t = transport(),
+  r = request(),
+  environment: Record<string, string | undefined> = cleanEnvironment,
+) {
   const session = await createSdkDriver({
     query: t.query,
-    environment: cleanEnvironment,
+    environment,
     executable: "/tmp/official-claude",
     normalizerFactory,
     shutdownTimeoutMs: 30,
@@ -105,6 +109,14 @@ async function open(t = transport(), r = request()) {
 }
 
 describe("official SDK query (offline doubles)", () => {
+  it("honors explicit effort over conflicting inherited runtime settings", async () => {
+    const { t } = await open(transport(), request(), {
+      ...cleanEnvironment,
+      CLAUDE_CODE_EFFORT_LEVEL: "low",
+    });
+    expect(t.options.effort).toBe("high");
+    expect(t.options.env?.CLAUDE_CODE_EFFORT_LEVEL).toBe("high");
+  });
   it("keeps long native tool instructions beyond Claude's default MCP description limit", async () => {
     const r = request();
     r.tools = [

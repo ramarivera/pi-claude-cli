@@ -1004,6 +1004,25 @@ export function createClaudeRuntime(
             "Selected driver has an incompatible contract",
           );
         if (
+          request.input.kind === "tool-results" &&
+          request.input.steering?.length &&
+          options.driver.capabilities.steering === "unsupported"
+        ) {
+          // Reject before replay can turn steering into another submitted prompt.
+          const pending = opening.get(request.session.sessionId);
+          const resident = pending
+            ? await pending
+            : sessions.get(request.session.sessionId);
+          if (resident) {
+            resident.invalidated = "reset";
+            await dispose(resident);
+          }
+          throw error(
+            "unsupported",
+            "Selected driver doesn't support steering",
+          );
+        }
+        if (
           request.settings.forwardSubagentText &&
           !options.driver.capabilities.forwardSubagentText
         )

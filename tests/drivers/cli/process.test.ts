@@ -188,6 +188,19 @@ const result = (id: string, text = id): HostToolResult => ({
 });
 
 describe("CLI resident process (offline child double)", () => {
+  it("honors capability-validated effort over conflicting inherited runtime settings", async () => {
+    const r = request();
+    r.settings.effort = "high";
+    const { session, iterator, receipt } = await open(
+      { CLAUDE_CODE_EFFORT_LEVEL: "low" },
+      r,
+    );
+    await prompt(session, "offline explicit effort");
+    await until(iterator, (event) => event.type === "turn_end");
+    expect(JSON.parse(await readFile(receipt, "utf8")).environment.effort).toBe(
+      "high",
+    );
+  });
   it("keeps long native tool instructions beyond Claude's default MCP description limit", async () => {
     const r = request();
     r.tools = r.tools.map((tool) => ({
