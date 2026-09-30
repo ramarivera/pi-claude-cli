@@ -1,5 +1,8 @@
-import { randomUUID } from "node:crypto";
-import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  McpServerConfig,
+  Options,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import {
   CONTRACT_VERSION,
   type ClaudeDriver,
@@ -12,11 +15,15 @@ import {
   type DriverSessionRequest,
   type EventAttribution,
   type InteractionResponse,
+  type HostToolResult,
   type UnsequencedClaudeDriverEvent,
   type UserContent,
 } from "../../contracts/index.js";
 import { sdkEnvironment } from "./auth.js";
 import { AsyncQueue, withinDeadline } from "./queue.js";
+import { HostMcpBridge, HOST_MCP_NAME } from "./host-mcp.js";
+import { jsonObject } from "./json.js";
+import { sdkError } from "./diagnostics.js";
 
 /** Narrow public lifecycle seam for labelled offline transport doubles. */
 export interface SdkQuery extends AsyncIterable<unknown> {
@@ -65,7 +72,9 @@ export function createSdkDriver(options: SdkDriverOptions = {}): ClaudeDriver {
       });
       const query =
         options.query ?? (await (options.loadSdk ?? loadOfficialSdk)()).query;
-      return new SdkSession(request, options, normalizer, query, env);
+      const session = new SdkSession(request, options, normalizer, env);
+      await session.start(query);
+      return session;
     },
   };
 }
@@ -85,13 +94,17 @@ interface PendingInteraction {
   cancel(): void;
 }
 
+class SessionIdentityMismatchError extends Error {}
+
 class SdkSession implements ClaudeDriverSession {
   readonly events = new AsyncQueue<ClaudeDriverEvent>();
   private readonly prompts = new AsyncQueue<QueuedPrompt>();
   private readonly abortController = new AbortController();
   private readonly interactions = new Map<string, PendingInteraction>();
-  private readonly query: SdkQuery;
-  private readonly pump: Promise<void>;
+  private readonly interactionIds = new Set<string>();
+  private query!: SdkQuery;
+  private pump: Promise<void> = Promise.resolve();
+  private readonly hostMcp: HostMcpBridge;
   private sequence = 0;
   private turnId?: string;
   private claudeSessionId?: string;
@@ -99,21 +112,69 @@ class SdkSession implements ClaudeDriverSession {
   private closed = false;
   private finished = false;
   private queryClosed = false;
+  private closeFailure?: Error;
   private closing?: Promise<void>;
 
   constructor(
     private readonly request: DriverSessionRequest,
     private readonly options: SdkDriverOptions,
     private readonly normalizer: ClaudeEventNormalizer,
-    query: SdkQueryFactory,
-    env: Record<string, string | undefined>,
+    private readonly env: Record<string, string | undefined>,
   ) {
+    this.hostMcp = new HostMcpBridge(
+      request.tools,
+      request.settings.toolResultTimeoutMs,
+      (event) => this.emit(event),
+    );
+  }
+
+  async start(query: SdkQueryFactory): Promise<void> {
+    const { request, options } = this;
+    if (request.resume.mode === "resident") {
+      await this.hostMcp.close();
+      throw new Error(
+        "Resident sessions must reuse their existing SDK driver session",
+      );
+    }
+    const mcpServers: Record<string, McpServerConfig> = {
+      [HOST_MCP_NAME]: {
+        type: "sdk",
+        name: HOST_MCP_NAME,
+        instance: this.hostMcp.server,
+        timeout: Math.max(1000, request.settings.toolResultTimeoutMs),
+      },
+    };
+    for (const server of request.settings.userMcpServers) {
+      if (!server.name.trim() || server.name in mcpServers) {
+        await this.hostMcp.close();
+        throw new Error(
+          "SDK MCP server names must be unique and cannot replace host namespace",
+        );
+      }
+      const config = server.config;
+      mcpServers[server.name] =
+        config.type === "stdio"
+          ? {
+              type: "stdio",
+              command: config.command,
+              args: config.args ? [...config.args] : undefined,
+              env: config.env ? { ...config.env } : undefined,
+            }
+          : {
+              type: config.type,
+              url: config.url,
+              headers: config.headers ? { ...config.headers } : undefined,
+            };
+    }
     const sdkOptions: Options = {
       cwd: request.identity.cwd,
       model: request.model,
       systemPrompt: request.systemPrompt,
       pathToClaudeCodeExecutable: options.executable,
-      env,
+      env: {
+        ...this.env,
+        MCP_TOOL_TIMEOUT: String(request.settings.toolResultTimeoutMs),
+      },
       abortController: this.abortController,
       effort: request.settings.effort,
       maxTurns: request.settings.maxTurns,
@@ -126,8 +187,13 @@ class SdkSession implements ClaudeDriverSession {
         : [],
       tools: [...request.settings.claudeTools],
       strictMcpConfig: true,
-      mcpServers: {},
+      mcpServers,
+      allowedTools: request.tools.map(
+        (tool) => `mcp__${HOST_MCP_NAME}__${tool.name}`,
+      ),
       canUseTool: (toolName, input, context) => {
+        if (this.hostMcp.ownsPermission(toolName, context.mcpServer))
+          return Promise.resolve({ behavior: "allow", updatedInput: input });
         const requestId = context.requestId;
         return this.parkInteraction(
           requestId,
@@ -203,13 +269,20 @@ class SdkSession implements ClaudeDriverSession {
     };
     if (request.resume.mode === "resume")
       sdkOptions.resume = request.resume.claudeSessionId;
-    if (request.resume.mode === "resident") {
+    try {
+      this.query = query({ prompt: this.input(), options: sdkOptions });
+      this.pump = this.pumpEvents();
+    } catch (error) {
+      await this.hostMcp.close();
       throw new Error(
-        "Resident sessions must reuse their existing SDK driver session",
+        sdkError(
+          error,
+          this.request.auth,
+          this.env,
+          "Official SDK query creation failed",
+        ).message,
       );
     }
-    this.query = query({ prompt: this.input(), options: sdkOptions });
-    this.pump = this.pumpEvents();
   }
 
   private get timeoutMs(): number {
@@ -248,7 +321,6 @@ class SdkSession implements ClaudeDriverSession {
         },
         parent_tool_use_id: null,
         client_composed: true,
-        uuid: randomUUID(),
         session_id: this.claudeSessionId,
       };
       queued.accept();
@@ -266,8 +338,9 @@ class SdkSession implements ClaudeDriverSession {
     );
   }
 
-  async deliverToolResults(): Promise<void> {
-    throw new Error("SDK host MCP handoff has not been attached");
+  async deliverToolResults(results: readonly HostToolResult[]): Promise<void> {
+    if (this.closed) throw new Error("SDK session is closed");
+    this.hostMcp.deliver(results);
   }
 
   async answerInteraction(response: InteractionResponse): Promise<void> {
@@ -291,7 +364,12 @@ class SdkSession implements ClaudeDriverSession {
       { type: "interaction_request" }
     >["request"],
   ): Promise<T> {
+    if (!requestId.trim() || this.interactionIds.has(requestId))
+      return Promise.reject(
+        new Error("SDK interaction requires a unique nonempty request ID"),
+      );
     if (signal.aborted || this.closed) return Promise.resolve(cancelled);
+    this.interactionIds.add(requestId);
     return new Promise((resolve) => {
       const cleanup = () => {
         clearTimeout(timer);
@@ -331,15 +409,34 @@ class SdkSession implements ClaudeDriverSession {
       attribution: {
         claudeSessionId: this.claudeSessionId,
         turnId: this.turnId,
-        ...attribution,
+        ...(payload.type === "host_tool_request"
+          ? { toolUseId: payload.call.id }
+          : {}),
+        ...Object.fromEntries(
+          Object.entries(attribution).filter(
+            ([, value]) => value !== undefined,
+          ),
+        ),
       },
       sequence: ++this.sequence,
     });
   }
 
   private normalize(event: UnsequencedClaudeDriverEvent): void {
-    if (event.type === "initialized")
+    // Only tools/call can attest that a host-owned operation actually parked.
+    if (event.type === "host_tool_request") return;
+    if (event.type === "initialized") {
+      const expected =
+        this.claudeSessionId ??
+        (this.request.resume.mode === "resume"
+          ? this.request.resume.claudeSessionId
+          : undefined);
+      if (expected && expected !== event.claudeSessionId)
+        throw new SessionIdentityMismatchError(
+          "SDK runtime initialized a different Claude session than the verified identity",
+        );
       this.claudeSessionId = event.claudeSessionId;
+    }
     this.emit(event, event.attribution);
   }
 
@@ -350,19 +447,45 @@ class SdkSession implements ClaudeDriverSession {
         for (const event of this.normalizer.normalize(message))
           this.normalize(event);
       }
-    } catch {
+    } catch (error) {
       reason = this.closed ? "closed" : "error";
       if (!this.closed)
         this.emit({
           type: "session_error",
-          error: { code: "transport", message: "Official SDK query failed" },
+          error:
+            error instanceof SessionIdentityMismatchError
+              ? { code: "history", message: error.message }
+              : sdkError(
+                  error,
+                  this.request.auth,
+                  this.env,
+                  "Official SDK query failed",
+                ),
         });
     } finally {
-      this.finish(this.closed ? "closed" : reason);
+      const finalReason = this.closed ? "closed" : reason;
+      this.closed = true;
+      this.drain();
+      try {
+        await withinDeadline(this.hostMcp.close(), this.timeoutMs);
+      } catch (error) {
+        this.emit({
+          type: "session_error",
+          error: sdkError(
+            error,
+            this.request.auth,
+            this.env,
+            "SDK host MCP close failed",
+          ),
+        });
+      }
+      this.closeQuery();
+      this.finish(finalReason);
     }
   }
 
   private drain(endInput = true): void {
+    this.hostMcp.cancel("Host tool call cancelled");
     for (const interaction of [...this.interactions.values()])
       interaction.cancel();
     const error = new Error(
@@ -402,15 +525,39 @@ class SdkSession implements ClaudeDriverSession {
   }
 
   private async closeOwned(): Promise<void> {
+    const deadline = Date.now() + this.timeoutMs;
+    let failure: { error: unknown } | undefined;
     this.closed = true;
     this.drain();
-    this.abortController.abort();
     try {
-      this.closeQuery();
-      await withinDeadline(this.pump, this.timeoutMs);
+      await withinDeadline(
+        (async () => {
+          await this.hostMcp.close();
+          this.abortController.abort();
+          this.closeQuery();
+          if (this.closeFailure) throw this.closeFailure;
+          await this.pump;
+        })(),
+        this.timeoutMs,
+      );
+    } catch (error) {
+      failure = { error };
     } finally {
-      this.finish("closed");
+      this.abortController.abort();
+      this.closeQuery();
+      try {
+        await withinDeadline(
+          this.hostMcp.forceClose(),
+          Math.max(1, deadline - Date.now()),
+        );
+      } catch (error) {
+        failure ??= { error };
+      } finally {
+        this.finish("closed");
+      }
     }
+    if (failure) throw failure.error;
+    if (this.closeFailure) throw this.closeFailure;
   }
 
   private closeQuery(): void {
@@ -418,13 +565,17 @@ class SdkSession implements ClaudeDriverSession {
     this.queryClosed = true;
     try {
       this.query.close();
-    } catch {
+    } catch (error) {
+      const diagnostic = sdkError(
+        error,
+        this.request.auth,
+        this.env,
+        "Official SDK query close failed",
+      );
+      this.closeFailure = new Error(diagnostic.message);
       this.emit({
         type: "session_error",
-        error: {
-          code: "transport",
-          message: "Official SDK query close failed",
-        },
+        error: diagnostic,
       });
     }
   }
@@ -443,16 +594,6 @@ function imageType(
   throw new Error("SDK prompt image type is unsupported");
 }
 
-function jsonObject(
-  input: Record<string, unknown>,
-): import("../../contracts/index.js").JsonObject {
-  // The SDK receives JSON control frames; reject rather than leak non-JSON data.
-  const serialized = JSON.stringify(input);
-  return JSON.parse(
-    serialized,
-  ) as import("../../contracts/index.js").JsonObject;
-}
-
 function historyReplay(
   messages: DriverSessionRequest["identity"]["history"]["messages"],
 ): UserContent[] {
@@ -468,6 +609,17 @@ function historyReplay(
       if (part.type === "image") content.push(part);
       else content.push({ type: "text", text: JSON.stringify(part) });
     }
+    if (
+      message.role === "assistant" &&
+      (message.stopReason || message.errorMessage)
+    )
+      content.push({
+        type: "text",
+        text: JSON.stringify({
+          stopReason: message.stopReason,
+          errorMessage: message.errorMessage,
+        }),
+      });
     if (message.role === "tool_result")
       content.push({
         type: "text",

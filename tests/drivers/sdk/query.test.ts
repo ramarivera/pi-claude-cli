@@ -55,6 +55,7 @@ const cleanEnvironment = {
   ANTHROPIC_BASE_URL: undefined,
   CLAUDE_CODE_OAUTH_TOKEN: undefined,
   CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: undefined,
+  CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR: undefined,
   CLAUDE_CODE_API_KEY_HELPER: undefined,
   CLAUDE_CODE_USE_BEDROCK: undefined,
   CLAUDE_CODE_USE_VERTEX: undefined,
@@ -156,6 +157,9 @@ describe("official SDK query (offline doubles)", () => {
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_API_KEY_HELPER",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -326,7 +330,12 @@ describe("official SDK query (offline doubles)", () => {
     const query: SdkQueryFactory = () => ({
       [Symbol.asyncIterator]: () => ({
         next: async () => {
-          throw new Error("offline-secret-in-error");
+          throw Object.assign(
+            new Error(
+              "Could not spawn executable: token=offline-secret-in-error",
+            ),
+            { code: "ENOENT" },
+          );
         },
       }),
       interrupt: async () => undefined,
@@ -345,7 +354,98 @@ describe("official SDK query (offline doubles)", () => {
       { type: "session_closed", reason: "error" },
     ]);
     expect(JSON.stringify(events)).not.toContain("offline-secret-in-error");
+    expect(events[0]).toMatchObject({
+      type: "session_error",
+      error: {
+        message: expect.stringContaining("Could not spawn executable"),
+        subtype: "ENOENT",
+      },
+    });
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a nonsettling query close within the deadline and terminates the driver event channel", async () => {
+    const query: SdkQueryFactory = () => ({
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }),
+      interrupt: async () => undefined,
+      close: () => {},
+    });
+    const session = await createSdkDriver({
+      query,
+      normalizerFactory,
+      environment: cleanEnvironment,
+      shutdownTimeoutMs: 20,
+    }).openSession(request());
+    await expect(session.close()).rejects.toThrow("timed out");
+    const events = [];
+    for await (const event of session.events) events.push(event);
+    expect(events).toMatchObject([
+      { type: "session_closed", reason: "closed" },
+    ]);
+  });
+
+  it("reports and rejects a failed official query close without leaving the event channel open", async () => {
+    const t = transport();
+    t.close.mockImplementation(() => {
+      t.output.end();
+      throw new Error("official subprocess termination failed");
+    });
+    const session = await createSdkDriver({
+      query: t.query,
+      normalizerFactory,
+      environment: cleanEnvironment,
+      shutdownTimeoutMs: 30,
+    }).openSession(request());
+    await expect(session.close()).rejects.toThrow(
+      "subprocess termination failed",
+    );
+    const events = [];
+    for await (const event of session.events) events.push(event);
+    expect(events).toMatchObject([
+      {
+        type: "session_error",
+        error: { message: "official subprocess termination failed" },
+      },
+      { type: "session_closed", reason: "closed" },
+    ]);
+  });
+
+  it("closes the owned MCP endpoint and ends its event channel on clean query EOF", async () => {
+    const { session, t } = await open();
+    t.output.end();
+    const events = [];
+    for await (const event of session.events) events.push(event);
+    expect(events).toMatchObject([{ type: "session_closed", reason: "eof" }]);
+    expect(t.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an authoritative runtime ID differing from a verified persisted resume", async () => {
+    const r = request();
+    r.resume = {
+      mode: "resume",
+      restoration: "native-persisted",
+      reason: "offline verified persistence",
+      claudeSessionId: "expected-id",
+    };
+    const { session, t } = await open(transport(), r);
+    expect(t.options.resume).toBe("expected-id");
+    t.output.push({
+      type: "initialized",
+      claudeSessionId: "different-id",
+      model: "offline",
+      runtimeVersion: "offline",
+      capabilities: [],
+      tools: [],
+      mcpServers: [],
+      attribution: {},
+    });
+    const events = [];
+    for await (const event of session.events) events.push(event);
+    expect(events).toMatchObject([
+      { type: "session_error", error: { code: "history" } },
+      { type: "session_closed", reason: "error" },
+    ]);
+    expect(t.close).toHaveBeenCalledOnce();
   });
 
   it("routes permission by its own request ID and cancels pending elicitation on close", async () => {
@@ -432,9 +532,56 @@ describe("official SDK query (offline doubles)", () => {
     expect(text).toContain("old-id");
     expect(text).toContain("offline-image");
     expect(text).toContain("previous");
+    expect(input.value).not.toHaveProperty("uuid");
+    expect(
+      (
+        input.value?.message.content as { type: string; text?: string }[]
+      ).filter((part) => part.text === "current"),
+    ).toHaveLength(1);
     const next = t.input.next();
     await ack;
     await session.close();
     await next;
+  });
+
+  it("rejects duplicate or empty interaction IDs without overwriting the parked callback", async () => {
+    const { session, t } = await open();
+    const events = session.events[Symbol.asyncIterator]();
+    const context = {
+      signal: new AbortController().signal,
+      requestId: "same-request",
+      toolUseID: "tool-a",
+    };
+    const first = t.options.canUseTool!("Read", { path: "file" }, context);
+    await events.next();
+    await expect(
+      t.options.canUseTool!("Read", { path: "different" }, context),
+    ).rejects.toThrow("unique nonempty");
+    await expect(
+      t.options.canUseTool!("Read", {}, { ...context, requestId: "" }),
+    ).rejects.toThrow("unique nonempty");
+    await expect(
+      t.options.onElicitation!(
+        {
+          serverName: "external",
+          message: "offline",
+          mode: "form",
+          requestedSchema: { type: "object", properties: {} },
+        },
+        { signal: context.signal, requestId: " " },
+      ),
+    ).rejects.toThrow("unique nonempty");
+    await session.answerInteraction({
+      kind: "permission",
+      requestId: "same-request",
+      decision: { behavior: "deny", message: "original callback remains" },
+    });
+    await expect(first).resolves.toMatchObject({
+      behavior: "deny",
+      message: "original callback remains",
+    });
+    await expect(t.options.canUseTool!("Read", {}, context)).rejects.toThrow(
+      "unique nonempty",
+    );
   });
 });
