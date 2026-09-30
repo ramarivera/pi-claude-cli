@@ -414,6 +414,284 @@ describe("Pi native lifecycle", () => {
     release();
     await first;
   });
+  it("settles abort while a payload hook never resolves and ignores its late return", async () => {
+    const native = await setup();
+    const controller = new AbortController();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let settled = false;
+    const events = native.run({
+      signal: controller.signal,
+      onPayload: () => pending,
+    });
+    void events.then(() => {
+      settled = true;
+    });
+    await flush();
+    controller.abort();
+    await flush();
+    const settledBeforeRelease = settled;
+    release();
+    expect((await events).at(-1)).toMatchObject({
+      type: "error",
+      reason: "aborted",
+    });
+    expect(settledBeforeRelease).toBe(true);
+    expect(native.factory).not.toHaveBeenCalled();
+  });
+  it("settles idle timeout during an unresolved factory and closes its late runtime", async () => {
+    vi.useFakeTimers();
+    const native = host();
+    const backend = runtime([initialized(), stop]);
+    let release!: (runtime: ClaudeRuntime) => void;
+    const pending = new Promise<ClaudeRuntime>((resolve) => {
+      release = resolve;
+    });
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: () => pending,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    let settled = false;
+    const events = collect(
+      native.provider().streamSimple(model, prompt(), { timeoutMs: 50 }),
+    );
+    void events.then(() => {
+      settled = true;
+    });
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+    await flush();
+    const settledBeforeRelease = settled;
+    release(backend);
+    const output = await events;
+    await flush();
+    expect(output.at(-1)).toMatchObject({
+      type: "error",
+      reason: "error",
+      error: { errorMessage: "Claude provider stream was idle for 50ms" },
+    });
+    expect(settledBeforeRelease).toBe(true);
+    expect(backend.streamRound).not.toHaveBeenCalled();
+    expect(backend.closeAll).toHaveBeenCalledTimes(1);
+  });
+  it("settles idle timeout while a payload hook is unresolved", async () => {
+    vi.useFakeTimers();
+    const native = await setup();
+    const events = native.run({
+      timeoutMs: 50,
+      onPayload: () => new Promise<void>(() => {}),
+    });
+    let settled = false;
+    void events.then(() => {
+      settled = true;
+    });
+    await flush();
+    await vi.advanceTimersByTimeAsync(50);
+    await flush();
+    expect(settled).toBe(true);
+    expect((await events).at(-1)).toMatchObject({
+      type: "error",
+      reason: "error",
+    });
+    expect(native.factory).not.toHaveBeenCalled();
+  });
+  it.each(["onResponse", "onProviderStreamEvent"] as const)(
+    "settles abort while %s is unresolved and cleans the initialized runtime",
+    async (callback) => {
+      const native = await setup();
+      const controller = new AbortController();
+      const hook = vi.fn(() => new Promise<void>(() => {}));
+      const events = native.run({
+        signal: controller.signal,
+        [callback]: hook,
+      });
+      let settled = false;
+      void events.then(() => {
+        settled = true;
+      });
+      await flush();
+      expect(hook).toHaveBeenCalledTimes(1);
+      controller.abort();
+      await flush();
+      expect(settled).toBe(true);
+      expect((await events).at(-1)).toMatchObject({
+        type: "error",
+        reason: "aborted",
+      });
+      expect(native.backend.invalidate).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each(["onResponse", "onProviderStreamEvent"] as const)(
+    "settles idle timeout while %s is unresolved",
+    async (callback) => {
+      vi.useFakeTimers();
+      const native = await setup();
+      const events = native.run({
+        timeoutMs: 50,
+        [callback]: () => new Promise<void>(() => {}),
+      });
+      let settled = false;
+      void events.then(() => {
+        settled = true;
+      });
+      await flush();
+      await vi.advanceTimersByTimeAsync(50);
+      await flush();
+      expect(settled).toBe(true);
+      expect((await events).at(-1)).toMatchObject({
+        type: "error",
+        reason: "error",
+      });
+      expect(native.backend.invalidate).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("creates a fresh runtime after a factory wait is aborted, disposing only the late factory", async () => {
+    const native = host();
+    const late = runtime([initialized(), stop]);
+    const fresh = runtime([initialized(), stop]);
+    let release!: (runtime: ClaudeRuntime) => void;
+    const pending = new Promise<ClaudeRuntime>((resolve) => {
+      release = resolve;
+    });
+    const factory = vi
+      .fn()
+      .mockReturnValueOnce(pending)
+      .mockResolvedValueOnce(fresh);
+    registerPiAdapter(native.pi, { configuration, runtimeFactory: factory });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const controller = new AbortController();
+    const events = collect(
+      native
+        .provider()
+        .streamSimple(model, prompt(), { signal: controller.signal }),
+    );
+    let settled = false;
+    void events.then(() => {
+      settled = true;
+    });
+    await flush();
+    controller.abort();
+    await flush();
+    expect(settled).toBe(true);
+    expect((await events).at(-1)).toMatchObject({
+      type: "error",
+      reason: "aborted",
+    });
+    expect(
+      (await collect(native.provider().streamSimple(model, prompt()))).at(-1),
+    ).toMatchObject({ type: "done" });
+    release(late);
+    await flush();
+    expect(late.streamRound).not.toHaveBeenCalled();
+    expect(late.closeAll).toHaveBeenCalledTimes(1);
+    expect(fresh.closeAll).not.toHaveBeenCalled();
+    await native.emit({ type: "session_shutdown", reason: "quit" });
+    expect(fresh.closeAll).toHaveBeenCalledTimes(1);
+    expect(late.closeAll).toHaveBeenCalledTimes(1);
+  });
+  it("disposes a factory result when the factory synchronously triggers host abort", async () => {
+    const native = host();
+    const backend = runtime([initialized(), stop]);
+    const controller = new AbortController();
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: async () => {
+        controller.abort();
+        return backend;
+      },
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const events = await collect(
+      native
+        .provider()
+        .streamSimple(model, prompt(), { signal: controller.signal }),
+    );
+    await flush();
+    expect(events.at(-1)).toMatchObject({ type: "error", reason: "aborted" });
+    expect(backend.streamRound).not.toHaveBeenCalled();
+    expect(backend.closeAll).toHaveBeenCalledTimes(1);
+    await native.emit({ type: "session_shutdown", reason: "quit" });
+    expect(backend.closeAll).toHaveBeenCalledTimes(1);
+  });
+  it("reports deferred late-factory cleanup failure at the next shutdown", async () => {
+    const native = host();
+    const backend = runtime([]);
+    vi.mocked(backend.closeAll).mockRejectedValue(
+      new Error("late close failed"),
+    );
+    let release!: (runtime: ClaudeRuntime) => void;
+    const pending = new Promise<ClaudeRuntime>((resolve) => {
+      release = resolve;
+    });
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: () => pending,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const controller = new AbortController();
+    const events = collect(
+      native
+        .provider()
+        .streamSimple(model, prompt(), { signal: controller.signal }),
+    );
+    await flush();
+    controller.abort();
+    await flush();
+    expect((await events).at(-1)).toMatchObject({
+      type: "error",
+      reason: "aborted",
+    });
+    release(backend);
+    await flush();
+    await expect(
+      native.emit({ type: "session_shutdown", reason: "quit" }),
+    ).rejects.toMatchObject({
+      message: "Pi deferred runtime cleanup failed",
+      errors: [expect.objectContaining({ message: "late close failed" })],
+    });
+    expect(backend.streamRound).not.toHaveBeenCalled();
+    expect(backend.closeAll).toHaveBeenCalledTimes(1);
+  });
+  it("preserves a pending shared factory for another concurrent native session", async () => {
+    const native = host();
+    const backend = runtime([initialized(), stop]);
+    let release!: (runtime: ClaudeRuntime) => void;
+    const pending = new Promise<ClaudeRuntime>((resolve) => {
+      release = resolve;
+    });
+    registerPiAdapter(native.pi, {
+      configuration,
+      runtimeFactory: () => pending,
+    });
+    await native.emit({ type: "session_start", reason: "startup" });
+    const controller = new AbortController();
+    const first = collect(
+      native
+        .provider()
+        .streamSimple(model, prompt(), { signal: controller.signal }),
+    );
+    const other = collect(
+      native.provider().streamSimple(model, prompt(), { sessionId: "other" }),
+    );
+    let firstSettled = false;
+    void first.then(() => {
+      firstSettled = true;
+    });
+    await flush();
+    controller.abort();
+    await flush();
+    expect(firstSettled).toBe(true);
+    release(backend);
+    expect((await other).at(-1)).toMatchObject({ type: "done" });
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0].session.sessionId).toBe("other");
+    expect(backend.closeAll).not.toHaveBeenCalled();
+    await native.emit({ type: "session_shutdown", reason: "quit" });
+    expect(backend.closeAll).toHaveBeenCalledTimes(1);
+  });
   it("handles a shutdown racing runtime creation without beginning stale inference", async () => {
     const native = host();
     const backend = runtime([initialized(), stop]);
@@ -428,9 +706,16 @@ describe("Pi native lifecycle", () => {
     await native.emit({ type: "session_start", reason: "startup" });
     const events = collect(native.provider().streamSimple(model, prompt()));
     await flush();
+    let settled = false;
+    void events.then(() => {
+      settled = true;
+    });
     const shutdown = native.emit({ type: "session_shutdown", reason: "quit" });
-    release(backend);
     await shutdown;
+    await flush();
+    expect(settled).toBe(true);
+    release(backend);
+    await flush();
     expect((await events).at(-1)).toMatchObject({
       type: "error",
       reason: "aborted",

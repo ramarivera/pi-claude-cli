@@ -23,22 +23,72 @@ export interface PiSessionState {
   releaseSignal?: () => void;
 }
 
+interface PiRuntimeSlot {
+  pending: Promise<ClaudeRuntime>;
+  value?: ClaudeRuntime;
+}
+
 /** Owns host identity and cancellation; Claude history reconciliation stays in core. */
 export class PiLifecycle {
   private readonly sessions = new Map<string, PiSessionState>();
   private currentId?: string;
-  private runtimePromise?: Promise<ClaudeRuntime>;
+  private runtimeSlot?: PiRuntimeSlot;
+  private readonly deferredCleanupErrors: unknown[] = [];
   constructor(private readonly factory: () => Promise<ClaudeRuntime>) {}
 
   runtime(): Promise<ClaudeRuntime> {
-    if (!this.runtimePromise) {
-      const pending = this.factory();
-      this.runtimePromise = pending;
-      void pending.catch(() => {
-        if (this.runtimePromise === pending) this.runtimePromise = undefined;
-      });
+    this.reportDeferredCleanup();
+    if (!this.runtimeSlot) {
+      const slot: PiRuntimeSlot = { pending: this.factory() };
+      this.runtimeSlot = slot;
+      void slot.pending.then(
+        (value) => {
+          slot.value = value;
+        },
+        () => {
+          if (this.runtimeSlot === slot) this.runtimeSlot = undefined;
+        },
+      );
     }
-    return this.runtimePromise;
+    const pending = this.runtimeSlot.pending;
+    // A factory may synchronously trigger host cancellation before its slot is recorded.
+    this.runtimeForCleanup();
+    return pending;
+  }
+  private reportDeferredCleanup(): void {
+    if (this.deferredCleanupErrors.length)
+      throw new AggregateError(
+        this.deferredCleanupErrors.splice(0),
+        "Pi deferred runtime cleanup failed",
+      );
+  }
+  private disposePending(pending: Promise<ClaudeRuntime>): void {
+    // A factory can't be cancelled. Own its eventual result without keeping native abort waiting.
+    void pending
+      .then(
+        (value) => value.closeAll(),
+        () => {},
+      )
+      .catch((error: unknown) => {
+        this.deferredCleanupErrors.push(error);
+      });
+  }
+  private runtimeForCleanup(): ClaudeRuntime | undefined {
+    const slot = this.runtimeSlot;
+    if (!slot || slot.value) return slot?.value;
+    // No inference has started on a pending factory. Preserve it only for other live waiters.
+    if (
+      ![...this.sessions.values()].some(
+        (state) =>
+          !state.retired &&
+          (state.active || state.parked) &&
+          !state.controller?.signal.aborted,
+      )
+    ) {
+      this.runtimeSlot = undefined;
+      this.disposePending(slot.pending);
+    }
+    return undefined;
   }
   private create(
     sessionId: string,
@@ -115,9 +165,9 @@ export class PiLifecycle {
     state.parked = false;
     this.detach(state);
     state.controller?.abort(new Error(`Pi session invalidated: ${reason}`));
-    const pending = this.runtimePromise;
+    const runtime = this.runtimeForCleanup();
     return this.enqueue(state, async () => {
-      if (pending) await (await pending).invalidate(previous, reason);
+      if (runtime) await runtime.invalidate(previous, reason);
     });
   }
   bindAbort(state: PiSessionState, signal?: AbortSignal): AbortSignal {
@@ -142,9 +192,9 @@ export class PiLifecycle {
     this.detach(state);
     state.controller?.abort(new Error("Pi session closed"));
     this.sessions.delete(state.identity.sessionId);
-    const pending = this.runtimePromise;
+    const runtime = this.runtimeForCleanup();
     await this.enqueue(state, async () => {
-      if (pending) await (await pending).close(state.identity.sessionId);
+      if (runtime) await runtime.close(state.identity.sessionId);
     });
   }
   private async closeFamily(state: PiSessionState): Promise<void> {
@@ -155,8 +205,10 @@ export class PiLifecycle {
     if (this.currentId === state.identity.sessionId) this.currentId = undefined;
   }
   private async closeAll(): Promise<void> {
-    const pending = this.runtimePromise;
-    this.runtimePromise = undefined;
+    const slot = this.runtimeSlot;
+    this.runtimeSlot = undefined;
+    const runtime = slot?.value;
+    if (slot && !runtime) this.disposePending(slot.pending);
     const states = [...this.sessions.values()];
     this.sessions.clear();
     this.currentId = undefined;
@@ -170,7 +222,8 @@ export class PiLifecycle {
     const cleanup = await Promise.allSettled(
       states.map((state) => state.cleanup),
     );
-    if (pending) await (await pending).closeAll();
+    if (runtime) await runtime.closeAll();
+    this.reportDeferredCleanup();
     const failures = cleanup.flatMap((result) =>
       result.status === "rejected" ? [result.reason as unknown] : [],
     );
@@ -250,4 +303,28 @@ export function idleWatchdog(
       timer = setTimeout(timeout, timeoutMs);
   };
   return { touch, stop };
+}
+
+/** Bound native callback/factory waits while retaining handlers for late promise settlement. */
+export function withSignal<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return operation;
+  return new Promise<T>((resolve, reject) => {
+    const abort = () =>
+      reject(signal.reason ?? new Error("Pi provider round aborted"));
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
 }
