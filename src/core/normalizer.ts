@@ -181,7 +181,7 @@ export function createClaudeEventNormalizer(
   let initializedId: string | undefined;
   let generation = 0;
   const context = (a: EventAttribution): string =>
-    `${a.claudeSessionId ?? initializedId ?? ""}:${a.parentToolUseId ?? "main"}`;
+    `${a.claudeSessionId ?? initializedId ?? ""}:${a.parentToolUseId ?? a.agentId ?? "main"}`;
   const fail = (
     message: string,
     a: EventAttribution,
@@ -273,6 +273,7 @@ export function createClaudeEventNormalizer(
         }
         if (
           !a.parentToolUseId &&
+          !a.agentId &&
           name.startsWith(prefix) &&
           tools.has(name.slice(prefix.length))
         )
@@ -289,7 +290,7 @@ export function createClaudeEventNormalizer(
             {
               tool_use_id: id,
               tool_name: name,
-              owner: a.parentToolUseId ? "subagent" : "claude",
+              owner: a.parentToolUseId || a.agentId ? "subagent" : "claude",
             },
             { ...a, toolUseId: id },
           ),
@@ -591,6 +592,18 @@ export function createClaudeEventNormalizer(
               : {}),
             attribution: attr,
           });
+        const stopReason = string(raw.stop_reason);
+        if (stopReason && !message.ended) {
+          message.ended = true;
+          message.stopReason = stopReason;
+          events.push({
+            type: "message_end",
+            messageId: id,
+            stopReason,
+            ...(message.usage ? { usage: message.usage } : {}),
+            attribution: attr,
+          });
+        }
         if (string(data.error))
           events.push({
             type: "session_error",
