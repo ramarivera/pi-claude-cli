@@ -211,9 +211,15 @@ export function toPiRequest(
     settings: {
       ...configuration.settings,
       effort,
-      ...(options.maxTokens !== undefined
-        ? { maxOutputTokens: options.maxTokens }
-        : {}),
+      maxOutputTokens:
+        options.maxTokens === undefined
+          ? configuration.settings.maxOutputTokens
+          : configuration.settings.maxOutputTokens === undefined
+            ? options.maxTokens
+            : Math.min(
+                options.maxTokens,
+                configuration.settings.maxOutputTokens,
+              ),
     },
     auth: configuration.auth,
     signal: options.signal,

@@ -246,6 +246,30 @@ describe("Pi transcript normalization", () => {
     expect(() => request({ maxTokens: 1.5 })).toThrow("positive integer");
   });
   it.each([
+    { native: 8192, expected: 4096 },
+    { native: 1024, expected: 1024 },
+    { native: undefined, expected: 4096 },
+  ])(
+    "keeps the configured output cap when native maxTokens is $native",
+    ({ native, expected }) => {
+      const capped = {
+        ...configuration,
+        settings: { ...configuration.settings, maxOutputTokens: 4096 },
+      };
+      expect(
+        toPiRequest(
+          context(),
+          model,
+          { maxTokens: native },
+          capped,
+          session,
+          "/cwd",
+          "r",
+        ).settings.maxOutputTokens,
+      ).toBe(expected);
+    },
+  );
+  it.each([
     "fetch",
     "websocketConnectTimeoutMs",
     "temperature",
