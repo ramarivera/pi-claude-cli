@@ -28,7 +28,7 @@ Authenticated tests consume account resources and remain opt-in. Existing live r
 If pushing a tag doesn't start Actions, dispatch the workflow from `main` with the existing release tag (substitute the version being released):
 
 ```nu
-gh workflow run publish.yml --ref main --field tag=v0.4.1
+gh workflow run publish.yml --ref main --field tag=v0.4.2
 ```
 
 The workflow resolves the tag to an immutable commit and runs the release gates against it. Publication uses the workflow's actual GitHub source commit for provenance and requires its tarball to be byte-for-byte identical to the tag's tarball. A difference in any packaged file blocks publication. Don't override `GITHUB_REF` or `GITHUB_SHA`: npm checks those values against the signing certificate's source identity.
@@ -41,6 +41,14 @@ with-env { PI_CLAUDE_INSTALLED_E2E: "1", PI_CLAUDE_DRIVER: "sdk" } { node --test
 ```
 
 These tests discover the provider through the real managed configuration and installed package. Pi uses `PI_OFFLINE=1` for package resolution so the smoke doesn't install or update unrelated home packages; Claude inference stays online. Scratch sessions and instrumentation keep test data separate from interactive sessions.
+
+For the steering release, verify the same four host/driver combinations with a native tool held open and a queued correction:
+
+```nu
+with-env { PI_CLAUDE_BOUNDARY_E2E: "1", PI_CLAUDE_BOUNDARY_INSTALLED: "1" } { npm run test:steering }
+```
+
+This suite defaults to Sonnet 5.5; `PI_CLAUDE_BOUNDARY_MODEL` overrides the model. It requires exact installed and managed package versions, native admission and consumption receipts, the original tool result once, correction text in the answer, and natural process cleanup. It retains failed receipts instead of treating queue admission as proof that Claude followed the correction.
 
 ## Manual fallback
 

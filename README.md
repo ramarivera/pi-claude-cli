@@ -79,6 +79,8 @@ Offline tests don't make authenticated model calls. `npm run test:live` reports 
 `npm run test:steering` runs offline boundary checks and skips its four actual-host
 cases unless `PI_CLAUDE_BOUNDARY_E2E=1`. Set `PI_CLAUDE_BOUNDARY_CASE=omp+cli`
 (or another host/driver pair) to select one paid queued-steering case.
+These cases default to Sonnet 5.5. Set `PI_CLAUDE_BOUNDARY_INSTALLED=1` with the
+inference opt-in to test the actual managed installed release.
 
 ## Architecture
 

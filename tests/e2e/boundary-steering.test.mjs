@@ -6,21 +6,25 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { publicStats, textProof } from "./diagnostics.mjs";
 import {
   CASES,
-  MODEL,
   ROOT,
   RpcHost,
   assertSocketCapacity,
   configureHostIsolation,
   hostArgs,
   hostEnvironment,
+  managedPiStartupOutput,
   preflight,
   receiptDirectory,
   scratchDirectory,
@@ -29,6 +33,13 @@ import {
 // This file has its own opt-in so running it never starts the larger live suite.
 const enabled = process.env.PI_CLAUDE_BOUNDARY_E2E === "1";
 const selected = process.env.PI_CLAUDE_BOUNDARY_CASE;
+const installed = process.env.PI_CLAUDE_BOUNDARY_INSTALLED === "1";
+const boundaryModel =
+  process.env.PI_CLAUDE_BOUNDARY_MODEL ?? "claude-sonnet-5-5";
+assert.ok(
+  !installed || enabled,
+  "PI_CLAUDE_BOUNDARY_INSTALLED=1 requires PI_CLAUDE_BOUNDARY_E2E=1",
+);
 if (enabled && selected)
   assert.ok(
     CASES.includes(selected),
@@ -182,25 +193,94 @@ function userText(message) {
         .join("\n");
 }
 
-async function select(rpc) {
-  const { models } = await rpc.command("get_available_models");
-  assert.equal(
-    models.filter(
-      (model) => model.provider === "pi-claude-cli" && model.id === MODEL,
-    ).length,
-    1,
-    "Supported model missing or ambiguous in the actual native catalog",
+function boundaryThinking(hostKind) {
+  if (hostKind === "omp") return "off";
+  const model = getBuiltinModels("anthropic").find(
+    (model) => model.id === boundaryModel,
   );
-  await rpc.command("set_model", { provider: "pi-claude-cli", modelId: MODEL });
-  await rpc.command("set_thinking_level", { level: "off" });
+  assert.ok(model, "Boundary model must exist in the pinned native Pi catalog");
+  return clampThinkingLevel(model, "off");
+}
+
+async function select(rpc, hostKind, installedPackage = false) {
+  const thinking = boundaryThinking(hostKind);
+  const { models } = await rpc.command("get_available_models");
+  const registered = models.filter(
+    (model) => model.provider === "pi-claude-cli",
+  );
+  if (installedPackage) {
+    assert.ok(
+      registered.length > 0,
+      "Installed provider is missing from the managed model picker",
+    );
+    assert.equal(
+      new Set(registered.map((model) => model.id)).size,
+      registered.length,
+      "Installed provider registered duplicate model IDs",
+    );
+    // The managed OMP picker filters enabledModels; CLI model selection still
+    // uses the complete registry. Avoid persisting model/thinking preferences.
+    const initial = await rpc.command("get_state");
+    assert.equal(initial.model.provider, "pi-claude-cli");
+    assert.equal(initial.model.id, boundaryModel);
+    assert.equal(initial.thinkingLevel, thinking);
+  } else {
+    assert.equal(
+      models.filter(
+        (model) =>
+          model.provider === "pi-claude-cli" && model.id === boundaryModel,
+      ).length,
+      1,
+      "Supported model missing or ambiguous in the actual native catalog",
+    );
+    await rpc.command("set_model", {
+      provider: "pi-claude-cli",
+      modelId: boundaryModel,
+    });
+    await rpc.command("set_thinking_level", { level: thinking });
+  }
   await rpc.command("set_auto_retry", { enabled: false });
   await rpc.command("set_auto_compaction", { enabled: false });
   const state = await rpc.command("get_state");
   assert.equal(state.model.provider, "pi-claude-cli");
-  assert.equal(state.model.id, MODEL);
-  assert.equal(state.thinkingLevel, "off");
+  assert.equal(state.model.id, boundaryModel);
+  assert.equal(state.thinkingLevel, thinking);
   assert.equal(state.autoCompactionEnabled, false);
   return state;
+}
+
+function boundaryArgs(hostKind, sandbox, system, installedPackage = false) {
+  const args = hostArgs(hostKind, sandbox, system);
+  const modelIndex = args.indexOf("--model");
+  assert.ok(modelIndex >= 0);
+  args[modelIndex + 1] =
+    hostKind === "omp" ? `pi-claude-cli/${boundaryModel}` : boundaryModel;
+  args[args.indexOf("--thinking") + 1] = boundaryThinking(hostKind);
+  if (!installedPackage) return args;
+  const disabled = args.indexOf("--no-extensions");
+  assert.ok(disabled >= 0);
+  args.splice(disabled, 1);
+  const source = args.indexOf(join(ROOT, `entrypoints/${hostKind}.ts`));
+  assert.ok(
+    source > 0 && args[source - 1] === "-e",
+    "Source provider entrypoint isn't independently selected",
+  );
+  args.splice(source - 1, 2);
+  return args;
+}
+
+function restorePiFlags(saved, current) {
+  // Restore only flags this test set to false, preserving concurrent changes.
+  for (const name of ["retry", "compaction"]) {
+    if (current[name]?.enabled !== false) continue;
+    if (Object.hasOwn(saved[name] ?? {}, "enabled"))
+      current[name].enabled = saved[name].enabled;
+    else {
+      delete current[name].enabled;
+      if (Object.keys(current[name]).length === 0) delete current[name];
+    }
+  }
+  return current;
 }
 
 function withEnvironment(values, work) {
@@ -668,6 +748,86 @@ test("native output proof captures split markers, snapshots and result presence 
   }
 });
 
+test("installed boundary discovery keeps owned observers and OMP isolation while removing source provider loading", () => {
+  for (const kind of ["pi", "omp"]) {
+    const source = boundaryArgs(
+      kind,
+      "/synthetic-owned-sandbox",
+      "synthetic-system",
+    );
+    assert.ok(source.includes("--no-extensions"));
+    assert.ok(source.includes(join(ROOT, `entrypoints/${kind}.ts`)));
+    assert.equal(
+      source[source.indexOf("--model") + 1],
+      kind === "omp" ? `pi-claude-cli/${boundaryModel}` : boundaryModel,
+    );
+    const args = boundaryArgs(
+      kind,
+      "/synthetic-owned-sandbox",
+      "synthetic-system",
+      true,
+    );
+    assert.equal(args.includes("--no-extensions"), false);
+    assert.equal(args.includes(join(ROOT, `entrypoints/${kind}.ts`)), false);
+    assert.ok(args.includes(join(ROOT, `tests/e2e/${kind}-tools.ts`)));
+    assert.equal(
+      args[args.indexOf("--model") + 1],
+      kind === "omp" ? `pi-claude-cli/${boundaryModel}` : boundaryModel,
+    );
+    if (kind === "omp")
+      assert.equal(
+        args[args.indexOf("--config") + 1],
+        "/synthetic-owned-sandbox/host-isolation.yml",
+      );
+  }
+});
+
+test("installed boundary mode requires the explicit inference opt-in before package discovery", () => {
+  const env = {
+    ...process.env,
+    PI_CLAUDE_BOUNDARY_E2E: "0",
+    PI_CLAUDE_BOUNDARY_INSTALLED: "1",
+  };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(
+    process.execPath,
+    ["--test", join(ROOT, "tests/e2e/boundary-steering.test.mjs")],
+    {
+      env,
+      encoding: "utf8",
+      timeout: 10000,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stdout + result.stderr,
+    /PI_CLAUDE_BOUNDARY_INSTALLED=1 requires PI_CLAUDE_BOUNDARY_E2E=1/,
+  );
+});
+
+test("installed Pi flag restoration preserves other settings and concurrent flag changes", () => {
+  const saved = { retry: { enabled: true }, unrelated: "old" };
+  const current = {
+    retry: { enabled: false, custom: "kept" },
+    compaction: { enabled: false },
+    unrelated: "concurrent",
+  };
+  assert.deepEqual(restorePiFlags(saved, current), {
+    retry: { enabled: true, custom: "kept" },
+    unrelated: "concurrent",
+  });
+  assert.deepEqual(
+    restorePiFlags(saved, {
+      retry: { enabled: true },
+      compaction: { enabled: true },
+    }),
+    {
+      retry: { enabled: true },
+      compaction: { enabled: true },
+    },
+  );
+});
+
 for (const name of CASES) {
   test(
     `actual ${name}: queued boundary steering retains a running native tool and omits false warning`,
@@ -690,8 +850,11 @@ for (const name of CASES) {
       const supplementalMarker = `STEER-${randomUUID()}`;
       const receipt = {
         schemaVersion: 1,
-        provenance: "actual-authenticated-boundary-host-rpc",
+        provenance: installed
+          ? "actual-installed-boundary"
+          : "actual-authenticated-boundary-host-rpc",
         case: name,
+        model: boundaryModel,
         started: new Date().toISOString(),
         budgets: {
           maxTurns: 8,
@@ -707,11 +870,67 @@ for (const name of CASES) {
       };
       let rpc;
       let failure;
+      let savedPiSettings;
+      let piSettingsPath;
       try {
         receipt.socketPathBytes = assertSocketCapacity(sandbox);
         mkdirSync(join(sandbox, "t"));
         configureHostIsolation(hostKind, sandbox);
         const env = hostEnvironment(hostKind, driver, sandbox, nonce);
+        if (installed) {
+          const agentRoot = realpathSync(
+            join(homedir(), `.${hostKind}`, "agent"),
+          );
+          const installRoot =
+            hostKind === "pi"
+              ? join(agentRoot, "npm")
+              : join(homedir(), ".omp", "plugins");
+          const packageRoot = realpathSync(
+            join(installRoot, "node_modules/@ramarivera/pi-claude-cli"),
+          );
+          const pkg = JSON.parse(
+            readFileSync(join(packageRoot, "package.json"), "utf8"),
+          );
+          const expected = JSON.parse(
+            readFileSync(join(ROOT, "package.json"), "utf8"),
+          );
+          receipt.packageVersion = pkg.version;
+          receipt.packageRoot = packageRoot;
+          receipt.sourcePackageVersion = expected.version;
+          receipt.agentRoot = agentRoot;
+          assert.equal(pkg.name, "@ramarivera/pi-claude-cli");
+          assert.equal(
+            pkg.version,
+            expected.version,
+            "Installed boundary package doesn't match the source release",
+          );
+          if (hostKind === "pi") {
+            piSettingsPath = join(agentRoot, "settings.json");
+            savedPiSettings = JSON.parse(readFileSync(piSettingsPath, "utf8"));
+            assert.ok(
+              savedPiSettings.packages.some(
+                (item) =>
+                  (typeof item === "string" ? item : item.source) ===
+                  `npm:${pkg.name}@${pkg.version}`,
+              ),
+              "Managed Pi settings must pin the installed release exactly",
+            );
+            env.PI_OFFLINE = "1";
+            receipt.packageResolution = { PI_OFFLINE: "1" };
+          } else {
+            const manifest = JSON.parse(
+              readFileSync(join(installRoot, "package.json"), "utf8"),
+            );
+            assert.equal(
+              manifest.dependencies[pkg.name],
+              pkg.version,
+              "Managed OMP manifest must pin the installed release exactly",
+            );
+          }
+          env.PI_CODING_AGENT_DIR = agentRoot;
+          delete env.PI_CONFIG_DIR;
+          receipt.packagePinVerified = true;
+        }
         Object.assign(env, {
           PCC_E2E_BOUNDARY: "1",
           PCC_E2E_GATE_RELEASE: release,
@@ -724,14 +943,17 @@ for (const name of CASES) {
           encoding: "utf8",
         }).stdout.trim();
         const system = `For this synthetic sandbox E2E, every assistant answer, including a greeting in response to hello, must begin with ${marker}. This prefix is mandatory. Obey the user's exact tool and supplemental instructions. Never inspect files, credentials, account settings, or network resources. Use only pcc_gate when requested.`;
-        const args = hostArgs(hostKind, sandbox, system);
+        const args = boundaryArgs(hostKind, sandbox, system, installed);
         // The shared live harness keeps its original tool selection.
         if (hostKind === "omp") args[args.indexOf("--tools") + 1] = "pcc_gate";
         rpc = new RpcHost(receipt.versions.binary, args, env, sandbox, {
           signal: context.signal,
           deadline,
+          ...(installed && hostKind === "pi"
+            ? { allowNonJsonOutput: managedPiStartupOutput }
+            : {}),
         });
-        const originalState = await select(rpc);
+        const originalState = await select(rpc, hostKind, installed);
         rpc.rememberBaseline();
 
         const hello = await rpc.prompt(hostKind, "hello");
@@ -761,7 +983,7 @@ for (const name of CASES) {
         assert.equal(started.data.calls, 1);
         assert.equal(existsSync(release), false);
         assert.equal((await rpc.command("get_state")).isStreaming, true);
-        const supplemental = `Supplemental instruction: after pcc_gate finishes, append ${supplementalMarker} exactly to your final answer and retain the exact nonce from its result. Don't rerun or cancel the tool or call any other tools.`;
+        const supplemental = `Update the final answer: include the exact line ${supplementalMarker} along with the original nonce from pcc_gate. Don't rerun or cancel the tool or call any other tools.`;
         const ack = await rpc.command("steer", { message: supplemental }, 4000);
         const queued = await rpc.command("get_state", {}, 4000);
         assert.equal(
@@ -986,6 +1208,8 @@ for (const name of CASES) {
               type,
             }));
             receipt.cleanup = await rpc.close();
+            if (installed && hostKind === "pi")
+              receipt.startupOutputCounts = rpc.startupOutputCounts;
             assert.deepEqual(receipt.cleanup.survivors, []);
             assert.deepEqual(
               receipt.cleanup.forcedChildren,
@@ -1004,6 +1228,24 @@ for (const name of CASES) {
           failure ??= error;
           receipt.status = "failed";
           receipt.cleanupFailure = { name: error.name };
+        }
+        if (savedPiSettings && rpc) {
+          try {
+            const current = JSON.parse(readFileSync(piSettingsPath, "utf8"));
+            const beforeRestore = JSON.stringify(current);
+            const restored = restorePiFlags(savedPiSettings, current);
+            if (JSON.stringify(restored) !== beforeRestore)
+              writeFileSync(
+                piSettingsPath,
+                JSON.stringify(restored, null, 2) + "\n",
+              );
+            receipt.piTestSettingsCleanup =
+              "owned retry/compaction flags restored";
+          } catch (error) {
+            failure ??= error;
+            receipt.status = "failed";
+            receipt.piTestSettingsCleanup = "failed";
+          }
         }
         receipt.finished = new Date().toISOString();
         receipt.phases.transportSteering = steeringConsumption(
@@ -1030,7 +1272,7 @@ for (const name of CASES) {
         try {
           receiptPath = join(
             receiptDirectory(),
-            `boundary-${name.replace("+", "-")}-${Date.now()}.json`,
+            `${installed ? "installed-boundary" : "boundary"}-${name.replace("+", "-")}-${Date.now()}.json`,
           );
           writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n", {
             mode: 0o600,

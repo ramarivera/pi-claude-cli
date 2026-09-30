@@ -109,7 +109,10 @@ with-env { PI_CLAUDE_BOUNDARY_E2E: "1", PI_CLAUDE_BOUNDARY_CASE: "omp+cli" } {
 ```
 
 The other selections are `omp+sdk`, `pi+cli` and `pi+sdk`; omit the case variable
-to run all four. Each case uses one resident Claude session capped at $0.25 in
+to run all four. The steering suite defaults to Sonnet 5.5; use
+`PI_CLAUDE_BOUNDARY_MODEL` to select another supported model. Pi derives the
+lowest supported thinking level through its native capability API (Sonnet 5.5
+clamps `off` to `low`); OMP accepts `off`. Each case uses one resident Claude session capped at $0.25 in
 reported runtime cost, eight turns and 512 output tokens per response. It sends
 a literal hello, then holds a native `pcc_gate` tool behind an owned release
 marker, queues an RPC steer while that tool runs, and releases its original
@@ -120,3 +123,8 @@ Receipts retain only bounded IDs, counts and marker-presence booleans, including
 failed semantic checks; no prompt or assistant text is persisted by this suite.
 This exercises host tool-boundary steering, not immediate during-token input
 through OMP's `LiveSteering.claim()`.
+
+Set `PI_CLAUDE_BOUNDARY_INSTALLED=1` alongside the inference opt-in to use actual
+managed package discovery. This mode requires matching exact installed and
+managed release pins, retains the test observers, and restores only the Pi
+retry/compaction flags changed by the test. See [the release sequence](../releasing.md).

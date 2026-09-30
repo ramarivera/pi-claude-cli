@@ -53,6 +53,7 @@ export class OmpLifecycle {
   private readonly sessions = new Map<string, OmpSessionState>();
   private currentContext?: ExtensionContext;
   private runtimePromise?: Promise<ClaudeRuntime>;
+  private api?: ExtensionAPI;
   constructor(private readonly factory: () => Promise<ClaudeRuntime>) {}
   runtime(): Promise<ClaudeRuntime> {
     if (!this.runtimePromise) {
@@ -208,10 +209,9 @@ export class OmpLifecycle {
     });
     // Native close() is synchronous; retain cleanup for subsequent awaited lifecycle hooks.
     void state.cleanup.catch((error: unknown) => {
-      state.context.ui.setStatus(
-        "pi-claude-cli-cleanup",
-        `Claude cleanup failed: ${bounded(error instanceof Error ? error.message : "runtime error")}`,
-      );
+      const message = `Claude cleanup failed: ${bounded(error instanceof Error ? error.message : "runtime error")}`;
+      this.api?.logger.error(message);
+      state.context.ui.notify(message, "error");
     });
   }
   observe(
@@ -275,6 +275,7 @@ export class OmpLifecycle {
     });
   }
   register(api: ExtensionAPI): void {
+    this.api = api;
     api.on("session_start", async (_event, ctx) => {
       const existing = this.forContext(ctx);
       this.capture(ctx);

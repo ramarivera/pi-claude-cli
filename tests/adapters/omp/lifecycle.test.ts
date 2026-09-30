@@ -45,7 +45,7 @@ function context(id = "host", agent = "Main", kind: "main" | "sub" = "main") {
       getSessionId: () => id,
       getLeafId: () => crypto.randomUUID(),
     },
-    ui: { setStatus: vi.fn() },
+    ui: { setStatus: vi.fn(), notify: vi.fn() },
     setTimeout: vi.fn((callback: () => void, milliseconds: number) =>
       setTimeout(callback, milliseconds),
     ),
@@ -73,12 +73,14 @@ function setup(
   const handlers = new Map<string, Handler>();
   let provider: ProviderConfig | undefined;
   const events = { emit: vi.fn() };
+  const logger = { error: vi.fn() };
   const api = {
     on: (name: string, handler: Handler) => handlers.set(name, handler),
     registerProvider: (_name: string, config: ProviderConfig) => {
       provider = config;
     },
     events,
+    logger,
   } as unknown as ExtensionAPI;
   const requests: HostRoundRequest[] = [];
   const runtime: ClaudeRuntime = {
@@ -104,7 +106,7 @@ function setup(
   ) => {
     await handlers.get(name)?.(event, ctx);
   };
-  return { emit, requests, runtime, factory, events, stream };
+  return { emit, requests, runtime, factory, events, logger, stream };
 }
 const prompt = {
   messages: [{ role: "user" as const, content: "hello", timestamp: 0 }],
@@ -164,6 +166,31 @@ describe("native OMP lifecycle", () => {
       host.requests[1].session.sessionId,
     );
     expect(map.size).toBe(1);
+  });
+  it("reports synchronous provider-close cleanup failures through native error channels", async () => {
+    const host = setup();
+    const ctx = context();
+    const map = new Map<string, ProviderSessionState>();
+    await host.emit("session_start", ctx);
+    await host.stream(model, prompt, { providerSessionState: map }).result();
+    vi.mocked(host.runtime.close).mockRejectedValueOnce(
+      new Error("close failed\n"),
+    );
+    const [state] = map.values();
+    state.close();
+    await flush();
+    expect(host.logger.error).toHaveBeenCalledExactlyOnceWith(
+      "Claude cleanup failed: close failed ",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(
+      "Claude cleanup failed: close failed ",
+      "error",
+    );
+    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith(
+      "pi-claude-cli-cleanup",
+      expect.anything(),
+    );
+    expect(map.size).toBe(0);
   });
   it("invalidates compaction/tree/fork revisions and retires saved-session reload state", async () => {
     const host = setup();
