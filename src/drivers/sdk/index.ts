@@ -59,7 +59,17 @@ export function createSdkDriver(options: SdkDriverOptions = {}): ClaudeDriver {
       forwardSubagentText: true,
     },
     async openSession(request) {
+      if (
+        request.settings.maxOutputTokens !== undefined &&
+        (!Number.isSafeInteger(request.settings.maxOutputTokens) ||
+          request.settings.maxOutputTokens <= 0)
+      )
+        throw new Error("maxOutputTokens must be a positive integer");
       const env = sdkEnvironment(request.auth, options.environment);
+      if (request.settings.maxOutputTokens !== undefined)
+        env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(
+          request.settings.maxOutputTokens,
+        );
       if (!options.normalizerFactory) {
         throw new Error(
           "SDK driver requires the shared event normalizer factory",

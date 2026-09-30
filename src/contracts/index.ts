@@ -140,6 +140,8 @@ export interface UserMcpServer {
 
 export interface RuntimeSettings {
   effort?: Effort;
+  /** Published Claude output-token setting; the runtime applies model caps. */
+  maxOutputTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
   /** Wall-clock bound for a parked host call, also applied to MCP runtime. */

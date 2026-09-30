@@ -29,6 +29,7 @@ if (args.includes("--version")) {
           hasHelper: !!process.env.CLAUDE_CODE_API_KEY_HELPER,
           baseUrl: process.env.ANTHROPIC_BASE_URL,
           cloudMcp: process.env.ENABLE_CLAUDEAI_MCP_SERVERS,
+          maxOutputTokens: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS,
         },
       }),
     );

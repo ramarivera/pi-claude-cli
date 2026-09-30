@@ -1,0 +1,2050 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "1.0.0",
+  "provenance": {
+    "kind": "synthetic",
+    "description": "Hand-authored protocol examples; no live capture or external fixture contents reused.",
+    "author": "pi-claude-cli verification lane",
+    "license": "MIT",
+    "source": "tests/fixtures/claude/v1/catalog.json",
+    "capturedAt": null
+  },
+  "targets": {
+    "claudeCli": "2.1.285",
+    "claudeAgentSdk": "0.3.285",
+    "pi": "0.99.1",
+    "omp": "18.4.4"
+  },
+  "flags": {
+    "cli": [
+      "--input-format=stream-json",
+      "--output-format=stream-json",
+      "--include-partial-messages"
+    ],
+    "sdk": {
+      "includePartialMessages": true
+    }
+  },
+  "normalizerOptions": {
+    "hostMcpServerName": "host",
+    "requestedModel": "requested-model",
+    "tools": [
+      {
+        "name": "read",
+        "owner": "host",
+        "description": "Synthetic fixture reader",
+        "inputSchema": {
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "initialization",
+      "coverage": ["lifecycle", "authoritative-session", "mcp-status"],
+      "frames": [
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "fixture-session",
+            "model": "fixture-model",
+            "claude_code_version": "2.1.285",
+            "tools": ["mcp__host__read"],
+            "capabilities": ["fixture-capability"],
+            "mcp_servers": [
+              {
+                "name": "host",
+                "status": "connected",
+                "source": "sdk"
+              }
+            ],
+            "apiKeySource": "none"
+          },
+          "expected": [
+            {
+              "type": "initialized",
+              "claudeSessionId": "fixture-session",
+              "model": "fixture-model",
+              "runtimeVersion": "2.1.285",
+              "tools": ["mcp__host__read"],
+              "capabilities": ["fixture-capability"],
+              "mcpServers": [
+                {
+                  "name": "host",
+                  "status": "connected",
+                  "source": "sdk"
+                }
+              ],
+              "authSource": "none"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success",
+              "isError": false,
+              "model": "requested-model"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["success"]
+      }
+    },
+    {
+      "id": "initialization-failure",
+      "coverage": ["lifecycle", "initialization-error"],
+      "frames": [
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "fixture-session",
+            "model": "fixture-model",
+            "claude_code_version": "2.1.285",
+            "tools": ["mcp__host__read"],
+            "capabilities": ["fixture-capability"],
+            "mcp_servers": [
+              {
+                "name": "host",
+                "status": "failed"
+              }
+            ],
+            "apiKeySource": "none"
+          },
+          "expected": [
+            {
+              "type": "initialized",
+              "mcpServers": [
+                {
+                  "name": "host",
+                  "status": "failed"
+                }
+              ]
+            },
+            {
+              "type": "session_error",
+              "error": {
+                "code": "runtime",
+                "message": "MCP server host initialization failed"
+              }
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": []
+      }
+    },
+    {
+      "id": "stream-snapshot-dedup",
+      "coverage": [
+        "text",
+        "delta",
+        "snapshot",
+        "dedupe",
+        "usage",
+        "terminal-once"
+      ],
+      "frames": [
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_start",
+              "message": {
+                "id": "text-message",
+                "model": "fixture-model",
+                "usage": {
+                  "input_tokens": 7
+                }
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "message_start",
+              "messageId": "text-message",
+              "model": "fixture-model"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_start",
+              "index": 0,
+              "content_block": {
+                "type": "text",
+                "text": ""
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_start",
+              "index": 0,
+              "content": {
+                "type": "text",
+                "text": ""
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_delta",
+              "index": 0,
+              "delta": {
+                "type": "text_delta",
+                "text": "Hello"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_delta",
+              "index": 0,
+              "delta": {
+                "kind": "text",
+                "text": "Hello"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_stop",
+              "index": 0
+            }
+          },
+          "expected": [
+            {
+              "type": "content_end",
+              "index": 0
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "block-0",
+            "message": {
+              "id": "text-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello"
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "assistant_snapshot",
+              "contentIndexes": [0],
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_start",
+              "index": 1,
+              "content_block": {
+                "type": "text",
+                "text": ""
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_start",
+              "index": 1,
+              "content": {
+                "type": "text",
+                "text": ""
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_delta",
+              "index": 1,
+              "delta": {
+                "type": "text_delta",
+                "text": " world"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_delta",
+              "index": 1,
+              "delta": {
+                "kind": "text",
+                "text": " world"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_stop",
+              "index": 1
+            }
+          },
+          "expected": [
+            {
+              "type": "content_end",
+              "index": 1
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "block-1",
+            "message": {
+              "id": "text-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "text",
+                  "text": " world"
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "assistant_snapshot",
+              "contentIndexes": [1],
+              "content": [
+                {
+                  "type": "text",
+                  "text": " world"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "full-text",
+            "message": {
+              "id": "text-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello"
+                },
+                {
+                  "type": "text",
+                  "text": " world"
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "assistant_snapshot",
+              "contentIndexes": [0, 1],
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello"
+                },
+                {
+                  "type": "text",
+                  "text": " world"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "full-text",
+            "message": {
+              "id": "text-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hello"
+                },
+                {
+                  "type": "text",
+                  "text": " world"
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": []
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_delta",
+              "delta": {
+                "stop_reason": "end_turn"
+              },
+              "usage": {
+                "output_tokens": 3
+              }
+            }
+          },
+          "expected": []
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_stop"
+            }
+          },
+          "expected": [
+            {
+              "type": "message_end",
+              "stopReason": "end_turn",
+              "usage": {
+                "inputTokens": 7,
+                "outputTokens": 3,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_stop"
+            }
+          },
+          "expected": []
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success",
+              "isError": false,
+              "model": "fixture-model"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "duplicate-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        }
+      ],
+      "outcome": {
+        "text": "Hello world",
+        "terminalStatuses": ["success"]
+      }
+    },
+    {
+      "id": "snapshot-only",
+      "coverage": ["full-assistant", "snapshot", "images", "repeated-text"],
+      "frames": [
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "full",
+            "message": {
+              "id": "full-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "same"
+                },
+                {
+                  "type": "text",
+                  "text": "same"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aW1hZ2U="
+                  }
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "assistant_snapshot",
+              "contentIndexes": [0, 1, 2],
+              "content": [
+                {
+                  "type": "text",
+                  "text": "same"
+                },
+                {
+                  "type": "text",
+                  "text": "same"
+                },
+                {
+                  "type": "image",
+                  "mimeType": "image/png",
+                  "data": "aW1hZ2U="
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success",
+              "model": "fixture-model"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "text": "samesame",
+        "terminalStatuses": ["success"]
+      }
+    },
+    {
+      "id": "thinking-signatures",
+      "coverage": ["thinking", "signature", "redacted-thinking", "dedupe"],
+      "frames": [
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_start",
+              "message": {
+                "id": "thinking-message",
+                "model": "fixture-model"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "message_start"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_start",
+              "index": 0,
+              "content_block": {
+                "type": "thinking",
+                "thinking": "",
+                "signature": ""
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_start",
+              "content": {
+                "type": "thinking",
+                "thinking": "",
+                "signature": ""
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_delta",
+              "index": 0,
+              "delta": {
+                "type": "thinking_delta",
+                "thinking": "synthetic reasoning"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_delta",
+              "delta": {
+                "kind": "thinking",
+                "thinking": "synthetic reasoning"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_delta",
+              "index": 0,
+              "delta": {
+                "type": "signature_delta",
+                "signature": "synthetic-signature"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_delta",
+              "delta": {
+                "kind": "signature",
+                "signature": "synthetic-signature"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_stop",
+              "index": 0
+            }
+          },
+          "expected": [
+            {
+              "type": "content_end"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "thinking-full",
+            "message": {
+              "id": "thinking-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "synthetic reasoning",
+                  "signature": "synthetic-signature"
+                },
+                {
+                  "type": "redacted_thinking",
+                  "data": "synthetic-opaque"
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "assistant_snapshot",
+              "contentIndexes": [0, 1],
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "synthetic reasoning",
+                  "signature": "synthetic-signature"
+                },
+                {
+                  "type": "thinking",
+                  "thinking": "synthetic-opaque",
+                  "redacted": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "thinking": [
+          {
+            "thinking": "synthetic reasoning",
+            "signature": "synthetic-signature"
+          },
+          {
+            "thinking": "synthetic-opaque",
+            "redacted": true
+          }
+        ],
+        "terminalStatuses": ["success"]
+      }
+    },
+    {
+      "id": "error-during-execution",
+      "coverage": ["terminal-error", "usage", "terminal-once"],
+      "frames": [
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "error_during_execution",
+            "is_error": false,
+            "result": "complete",
+            "errors": ["synthetic actionable failure"],
+            "usage": {
+              "input_tokens": 9,
+              "output_tokens": 4,
+              "cache_read_input_tokens": 2,
+              "cache_creation_input_tokens": 1
+            },
+            "total_cost_usd": 0.012,
+            "modelUsage": {
+              "fixture-model": {
+                "inputTokens": 9
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "error",
+              "subtype": "error_during_execution",
+              "isError": true,
+              "error": {
+                "code": "runtime",
+                "message": "synthetic actionable failure",
+                "subtype": "error_during_execution"
+              },
+              "usage": {
+                "inputTokens": 9,
+                "outputTokens": 4,
+                "cacheReadTokens": 2,
+                "cacheWriteTokens": 1,
+                "costUsd": 0.012,
+                "modelUsage": {
+                  "fixture-model": {
+                    "inputTokens": 9
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "duplicate",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["error"]
+      }
+    },
+    {
+      "id": "error-max-turns",
+      "coverage": ["terminal-error", "usage", "terminal-once"],
+      "frames": [
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "error_max_turns",
+            "is_error": false,
+            "result": "complete",
+            "errors": ["synthetic actionable failure"],
+            "usage": {
+              "input_tokens": 9,
+              "output_tokens": 4,
+              "cache_read_input_tokens": 2,
+              "cache_creation_input_tokens": 1
+            },
+            "total_cost_usd": 0.012,
+            "modelUsage": {
+              "fixture-model": {
+                "inputTokens": 9
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "error",
+              "subtype": "error_max_turns",
+              "isError": true,
+              "error": {
+                "code": "runtime",
+                "message": "synthetic actionable failure",
+                "subtype": "error_max_turns"
+              },
+              "usage": {
+                "inputTokens": 9,
+                "outputTokens": 4,
+                "cacheReadTokens": 2,
+                "cacheWriteTokens": 1,
+                "costUsd": 0.012,
+                "modelUsage": {
+                  "fixture-model": {
+                    "inputTokens": 9
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "duplicate",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["error"]
+      }
+    },
+    {
+      "id": "error-max-budget-usd",
+      "coverage": ["terminal-error", "usage", "terminal-once"],
+      "frames": [
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "error_max_budget_usd",
+            "is_error": false,
+            "result": "complete",
+            "errors": ["synthetic actionable failure"],
+            "usage": {
+              "input_tokens": 9,
+              "output_tokens": 4,
+              "cache_read_input_tokens": 2,
+              "cache_creation_input_tokens": 1
+            },
+            "total_cost_usd": 0.012,
+            "modelUsage": {
+              "fixture-model": {
+                "inputTokens": 9
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "error",
+              "subtype": "error_max_budget_usd",
+              "isError": true,
+              "error": {
+                "code": "runtime",
+                "message": "synthetic actionable failure",
+                "subtype": "error_max_budget_usd"
+              },
+              "usage": {
+                "inputTokens": 9,
+                "outputTokens": 4,
+                "cacheReadTokens": 2,
+                "cacheWriteTokens": 1,
+                "costUsd": 0.012,
+                "modelUsage": {
+                  "fixture-model": {
+                    "inputTokens": 9
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "duplicate",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["error"]
+      }
+    },
+    {
+      "id": "error-max-structured-output-retries",
+      "coverage": ["terminal-error", "usage", "terminal-once"],
+      "frames": [
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "error_max_structured_output_retries",
+            "is_error": false,
+            "result": "complete",
+            "errors": ["synthetic actionable failure"],
+            "usage": {
+              "input_tokens": 9,
+              "output_tokens": 4,
+              "cache_read_input_tokens": 2,
+              "cache_creation_input_tokens": 1
+            },
+            "total_cost_usd": 0.012,
+            "modelUsage": {
+              "fixture-model": {
+                "inputTokens": 9
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "error",
+              "subtype": "error_max_structured_output_retries",
+              "isError": true,
+              "error": {
+                "code": "runtime",
+                "message": "synthetic actionable failure",
+                "subtype": "error_max_structured_output_retries"
+              },
+              "usage": {
+                "inputTokens": 9,
+                "outputTokens": 4,
+                "cacheReadTokens": 2,
+                "cacheWriteTokens": 1,
+                "costUsd": 0.012,
+                "modelUsage": {
+                  "fixture-model": {
+                    "inputTokens": 9
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "duplicate",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["error"]
+      }
+    },
+    {
+      "id": "future-error-subtype",
+      "coverage": ["terminal-error", "usage", "terminal-once"],
+      "frames": [
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "future_error_subtype",
+            "is_error": false,
+            "result": "complete",
+            "errors": ["synthetic actionable failure"],
+            "usage": {
+              "input_tokens": 9,
+              "output_tokens": 4,
+              "cache_read_input_tokens": 2,
+              "cache_creation_input_tokens": 1
+            },
+            "total_cost_usd": 0.012,
+            "modelUsage": {
+              "fixture-model": {
+                "inputTokens": 9
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "error",
+              "subtype": "future_error_subtype",
+              "isError": true,
+              "error": {
+                "code": "runtime",
+                "message": "synthetic actionable failure",
+                "subtype": "future_error_subtype"
+              },
+              "usage": {
+                "inputTokens": 9,
+                "outputTokens": 4,
+                "cacheReadTokens": 2,
+                "cacheWriteTokens": 1,
+                "costUsd": 0.012,
+                "modelUsage": {
+                  "fixture-model": {
+                    "inputTokens": 9
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "duplicate",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["error"]
+      }
+    },
+    {
+      "id": "success-is-error",
+      "coverage": ["terminal-error", "is-error"],
+      "frames": [
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": true,
+            "result": "synthetic explicit failure"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "error",
+              "isError": true,
+              "error": {
+                "message": "synthetic explicit failure"
+              }
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["error"]
+      }
+    },
+    {
+      "id": "progress-liveness",
+      "coverage": [
+        "retry",
+        "rate-limit",
+        "compaction",
+        "status",
+        "hook",
+        "user-input"
+      ],
+      "frames": [
+        {
+          "payload": {
+            "type": "system",
+            "session_id": "fixture-session",
+            "attempt": 2,
+            "delay_ms": 20,
+            "subtype": "api_retry"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "retry",
+              "subtype": "api_retry"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "rate_limit_event",
+            "session_id": "fixture-session",
+            "rate_limit_info": {
+              "status": "allowed_warning",
+              "resetsAt": 123
+            }
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "rate-limit",
+              "subtype": "rate_limit_event"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "session_id": "fixture-session",
+            "compact_metadata": {
+              "trigger": "auto",
+              "pre_tokens": 10
+            },
+            "subtype": "compact_boundary"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "compaction",
+              "subtype": "compact_boundary"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "session_id": "fixture-session",
+            "status": "compacting",
+            "subtype": "status"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "status",
+              "subtype": "status"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "session_id": "fixture-session",
+            "hook_id": "fixture-hook",
+            "subtype": "hook_response"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "hook",
+              "subtype": "hook_response"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "user",
+            "session_id": "fixture-session",
+            "message": {
+              "role": "user",
+              "content": "synthetic user"
+            }
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "user-input",
+              "subtype": "user"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "auth_status",
+            "session_id": "fixture-session",
+            "isAuthenticating": false
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "status",
+              "subtype": "auth_status"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": ["success"]
+      }
+    },
+    {
+      "id": "subagent-task-isolation",
+      "coverage": ["subagent", "task", "ownership", "attribution"],
+      "frames": [
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "task_started",
+            "session_id": "fixture-session",
+            "task_id": "fixture-task",
+            "agent_id": "fixture-agent",
+            "parent_tool_use_id": "fixture-parent",
+            "tool_use_id": "fixture-tool"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "task",
+              "subtype": "task_started",
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "taskId": "fixture-task",
+                "agentId": "fixture-agent",
+                "parentToolUseId": "fixture-parent",
+                "toolUseId": "fixture-tool"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": "fixture-session",
+            "task_id": "fixture-task",
+            "agent_id": "fixture-agent",
+            "parent_tool_use_id": "fixture-parent",
+            "tool_use_id": "fixture-tool"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "task",
+              "subtype": "task_updated",
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "taskId": "fixture-task",
+                "agentId": "fixture-agent",
+                "parentToolUseId": "fixture-parent",
+                "toolUseId": "fixture-tool"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "task_notification",
+            "session_id": "fixture-session",
+            "task_id": "fixture-task",
+            "agent_id": "fixture-agent",
+            "parent_tool_use_id": "fixture-parent",
+            "tool_use_id": "fixture-tool"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "task",
+              "subtype": "task_notification",
+              "attribution": {
+                "claudeSessionId": "fixture-session",
+                "taskId": "fixture-task",
+                "agentId": "fixture-agent",
+                "parentToolUseId": "fixture-parent",
+                "toolUseId": "fixture-tool"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_start",
+              "message": {
+                "id": "main",
+                "model": "fixture-model"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "message_start",
+              "messageId": "main"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": "fixture-parent",
+            "event": {
+              "type": "message_start",
+              "message": {
+                "id": "child",
+                "model": "fixture-model"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "message_start",
+              "messageId": "child",
+              "attribution": {
+                "parentToolUseId": "fixture-parent"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": "fixture-parent",
+            "uuid": "child-snapshot",
+            "message": {
+              "id": "child",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "child-tool",
+                  "name": "mcp__host__read",
+                  "input": {
+                    "path": "fixture.txt"
+                  }
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "tool-progress",
+              "data": {
+                "owner": "subagent",
+                "tool_use_id": "child-tool"
+              },
+              "attribution": {
+                "parentToolUseId": "fixture-parent",
+                "toolUseId": "child-tool"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": "fixture-parent",
+            "uuid": "child-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success",
+              "attribution": {
+                "parentToolUseId": "fixture-parent"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_start",
+              "index": 0,
+              "content_block": {
+                "type": "text",
+                "text": "main output"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "content_start",
+              "messageId": "main"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "main-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success",
+              "attribution": {
+                "parentToolUseId": null
+              }
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "text": "main output",
+        "terminalStatuses": ["success", "success"],
+        "hostToolRequests": 0
+      }
+    },
+    {
+      "id": "tool-ownership",
+      "coverage": ["tool-call", "native-schema", "ownership"],
+      "frames": [
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "tools-snapshot",
+            "message": {
+              "id": "tools",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "host-tool",
+                  "name": "mcp__host__read",
+                  "input": {
+                    "path": "fixture.txt",
+                    "options": {
+                      "offset": 1,
+                      "limit": 2
+                    }
+                  }
+                },
+                {
+                  "type": "tool_use",
+                  "id": "claude-tool",
+                  "name": "Read",
+                  "input": {
+                    "file_path": "fixture.txt"
+                  }
+                },
+                {
+                  "type": "tool_use",
+                  "id": "user-tool",
+                  "name": "mcp__external__read",
+                  "input": {}
+                },
+                {
+                  "type": "tool_use",
+                  "id": "inactive-tool",
+                  "name": "mcp__host__inactive",
+                  "input": {}
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "data": {
+                "owner": "claude",
+                "tool_use_id": "claude-tool"
+              }
+            },
+            {
+              "type": "observation",
+              "data": {
+                "owner": "claude",
+                "tool_use_id": "user-tool"
+              }
+            },
+            {
+              "type": "observation",
+              "data": {
+                "owner": "claude",
+                "tool_use_id": "inactive-tool"
+              }
+            },
+            {
+              "type": "assistant_snapshot",
+              "contentIndexes": [0],
+              "content": [
+                {
+                  "type": "tool_call",
+                  "id": "host-tool",
+                  "name": "read",
+                  "arguments": {
+                    "path": "fixture.txt",
+                    "options": {
+                      "offset": 1,
+                      "limit": 2
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "toolCalls": [
+          {
+            "type": "tool_call",
+            "id": "host-tool",
+            "name": "read",
+            "arguments": {
+              "path": "fixture.txt",
+              "options": {
+                "offset": 1,
+                "limit": 2
+              }
+            }
+          }
+        ],
+        "terminalStatuses": ["success"],
+        "hostToolRequests": 0
+      }
+    },
+    {
+      "id": "unknown-additive",
+      "coverage": ["unknown-frame", "diagnostic", "sanitization"],
+      "frames": [
+        {
+          "payload": {
+            "type": "future_event",
+            "subtype": "future_subtype",
+            "session_id": "fixture-session",
+            "payload": "synthetic-private-value",
+            "authorization": "Bearer synthetic-credential"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "diagnostic",
+              "subtype": "unknown-event",
+              "data": {
+                "type": "future_event",
+                "subtype": "future_subtype",
+                "fields": [
+                  "type",
+                  "subtype",
+                  "session_id",
+                  "payload",
+                  "authorization"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": "fixture-session",
+            "task_id": "fixture-task",
+            "description": "Bearer synthetic-credential",
+            "env": {
+              "SYNTHETIC_SECRET": "synthetic-private-value"
+            }
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "task",
+              "data": {
+                "description": "Bearer [redacted]",
+                "env": "[redacted]"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "forbiddenOutput": ["synthetic-private-value", "synthetic-credential"],
+        "terminalStatuses": ["success"]
+      }
+    },
+    {
+      "id": "malformed-required",
+      "coverage": ["malformed", "required-id", "tool-correlation"],
+      "frames": [
+        {
+          "payload": null,
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "protocol"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {},
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "protocol"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_start",
+              "message": {}
+            }
+          },
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "protocol"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "bad-tool-snapshot",
+            "message": {
+              "id": "bad-tool",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "name": "mcp__host__read",
+                  "input": {}
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "tool-correlation"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "tool_progress",
+            "session_id": "fixture-session"
+          },
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "tool-correlation"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "task_updated",
+            "session_id": "fixture-session"
+          },
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "protocol"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": "false",
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "session_error",
+              "error": {
+                "code": "protocol"
+              }
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "terminalStatuses": [],
+        "hostToolRequests": 0
+      }
+    },
+    {
+      "id": "abort-resident-reset",
+      "coverage": [
+        "abort",
+        "terminal-once",
+        "resident",
+        "reset",
+        "late-content"
+      ],
+      "frames": [
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_start",
+              "message": {
+                "id": "abort-message",
+                "model": "fixture-model"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "message_start"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "fixture-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete",
+            "terminal_reason": "user_abort"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "aborted",
+              "isError": true,
+              "error": {
+                "code": "aborted"
+              }
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "late-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": []
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "content_block_start",
+              "index": 0,
+              "content_block": {
+                "type": "text",
+                "text": "late"
+              }
+            }
+          },
+          "expected": []
+        },
+        {
+          "payload": {
+            "type": "system",
+            "subtype": "conversation_reset",
+            "session_id": "fixture-session"
+          },
+          "expected": [
+            {
+              "type": "observation",
+              "family": "reset"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "stream_event",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "event": {
+              "type": "message_start",
+              "message": {
+                "id": "resident-message",
+                "model": "fixture-model"
+              }
+            }
+          },
+          "expected": [
+            {
+              "type": "message_start"
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "assistant",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "resident-snapshot",
+            "message": {
+              "id": "resident-message",
+              "model": "fixture-model",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "next turn"
+                }
+              ],
+              "stop_reason": null
+            }
+          },
+          "expected": [
+            {
+              "type": "assistant_snapshot",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "next turn"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "payload": {
+            "type": "result",
+            "session_id": "fixture-session",
+            "parent_tool_use_id": null,
+            "uuid": "resident-result",
+            "subtype": "success",
+            "is_error": false,
+            "result": "complete"
+          },
+          "expected": [
+            {
+              "type": "turn_end",
+              "status": "success"
+            }
+          ]
+        }
+      ],
+      "outcome": {
+        "text": "next turn",
+        "terminalStatuses": ["aborted", "success"]
+      }
+    }
+  ]
+}

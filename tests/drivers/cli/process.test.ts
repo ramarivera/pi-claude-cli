@@ -66,6 +66,7 @@ function request(): DriverSessionRequest {
       claudeTools: [],
       userMcpServers: [],
       maxTurns: 3,
+      maxOutputTokens: 8192,
       maxBudgetUsd: 0.25,
       forwardSubagentText: true,
     },
@@ -187,6 +188,19 @@ const result = (id: string, text = id): HostToolResult => ({
 });
 
 describe("CLI resident process (offline child double)", () => {
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid output-token limit %s before executable preflight",
+    async (limit) => {
+      const r = request();
+      r.settings.maxOutputTokens = limit;
+      await expect(
+        createCliDriver({
+          executable: "/missing/claude",
+          normalizerFactory: normalizer,
+        }).openSession(r),
+      ).rejects.toThrow("maxOutputTokens must be a positive integer");
+    },
+  );
   it("uses prompt-file argv, explicit cwd/model, bounded config files, login env and a resident second turn", async () => {
     const { session, iterator, receipt } = await open({
       CLAUDE_CONFIG_DIR: "/offline-selected-config",
@@ -227,6 +241,7 @@ describe("CLI resident process (offline child double)", () => {
       configDir: "/offline-selected-config",
       hasKey: false,
       cloudMcp: "0",
+      maxOutputTokens: "8192",
     });
     const tempDirectory = dirname(
       before.args[before.args.indexOf("--system-prompt-file") + 1],
