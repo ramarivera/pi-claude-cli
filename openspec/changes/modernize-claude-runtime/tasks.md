@@ -86,7 +86,7 @@ Beads is the status/dependency authority. Every checkbox maps to exactly one chi
   - Blocked by: `pcc-bootstrap`.
   - Acceptance: OMP normalized context.tools/schema format, hashline/apply-patch/replacement edit, separate glob/semantic find, bash timeout units, callbacks/errors, cwd and native entrypoint; no Pi package imports; native tools retain OMP owner.
 
-- [x] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
+- [ ] 6.2 Implement OMP session capabilities and attributed progress (`pcc-omp-life`; lane `omp`; 100 min).
   - Capabilities: `omp-adapter`, `session-lifecycle`, `claude-event-contract`.
   - Blocked by: `pcc-omp-tools`.
   - Acceptance: Provider session store, shutdown/reload/subagent isolation, attributed task/status/limit progress and capability-gated steering; Claude tasks distinguished from OMP tasks; both drivers supported and unsupported capabilities explicit.
