@@ -251,7 +251,14 @@ export function toRequest(
       ...configuration.settings,
       effort: effort as HostRoundRequest["settings"]["effort"],
       maxOutputTokens:
-        options.maxTokens ?? configuration.settings.maxOutputTokens,
+        options.maxTokens === undefined
+          ? configuration.settings.maxOutputTokens
+          : configuration.settings.maxOutputTokens === undefined
+            ? options.maxTokens
+            : Math.min(
+                options.maxTokens,
+                configuration.settings.maxOutputTokens,
+              ),
     },
     auth: configuration.auth,
     signal: options.signal,

@@ -342,6 +342,17 @@ describe("native OMP request normalization", () => {
       "positive safe integer",
     );
   });
+  it("keeps configured output bounds when native OMP supplies a larger default", () => {
+    const bounded = {
+      ...configuration,
+      settings: { ...configuration.settings, maxOutputTokens: 512 },
+    };
+    const configuredRequest = (maxTokens?: number) =>
+      toRequest(model, context, { maxTokens }, bounded, session, "/project");
+    expect(configuredRequest(64000).settings.maxOutputTokens).toBe(512);
+    expect(configuredRequest(256).settings.maxOutputTokens).toBe(256);
+    expect(configuredRequest().settings.maxOutputTokens).toBe(512);
+  });
   it("retains all tool results when native boundary steering follows them", () => {
     const mixed: Context = {
       messages: [
