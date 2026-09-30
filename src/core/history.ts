@@ -26,15 +26,21 @@ export function digest(value: unknown): string {
     .digest("hex");
 }
 export function messageDigest(message: TranscriptMessage): string {
+  if (message.role !== "assistant") return digest(message);
+  // Native hosts may elide empty text blocks after a streamed assistant turn.
+  // Preserve whitespace, thinking/signatures, calls and meaningful block order.
+  const semantic = {
+    ...message,
+    content: message.content.filter(
+      (block) => block.type !== "text" || block.text !== "",
+    ),
+  };
   // Hosts differ in whether they spell a successful stop reason explicitly.
-  if (
-    message.role === "assistant" &&
-    (message.stopReason === "stop" || message.stopReason === "toolUse")
-  ) {
-    const { stopReason: _stopReason, ...semantic } = message;
-    return digest(semantic);
+  if (message.stopReason === "stop" || message.stopReason === "toolUse") {
+    const { stopReason: _stopReason, ...successful } = semantic;
+    return digest(successful);
   }
-  return digest(message);
+  return digest(semantic);
 }
 export function currentPrompt(
   request: HostRoundRequest,
