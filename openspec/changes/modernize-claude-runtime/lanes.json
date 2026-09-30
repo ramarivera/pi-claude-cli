@@ -107,7 +107,9 @@
         "entrypoints/runtime.ts",
         "tsconfig.pi.json",
         "tsconfig.omp.json",
-        "tests/run-live.mjs"
+        "tests/run-live.mjs",
+        "entrypoints/config.ts",
+        "tests/runtime-config.test.ts"
       ],
       "kind": "implementation"
     }
