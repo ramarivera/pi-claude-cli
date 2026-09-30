@@ -256,6 +256,99 @@ async function started(
 }
 
 describe("Claude runtime session ownership (offline)", () => {
+  it("exposes the unended message blocking a parked handoff without assistant text or arguments", async () => {
+    const driver = new OfflineDriver(),
+      runtime = createClaudeRuntime({ driver });
+    try {
+      const first = collect(runtime.streamRound(request()));
+      const session = await started(driver);
+      step(session, "previous", [call("a")]);
+      session.park(call("a"));
+      const one = outcome(await first),
+        a = toolResult("a");
+      const second = collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content, "toolUse"),
+              { role: "tool_result", ...a },
+            ],
+            input: { kind: "tool-results", results: [a] },
+          }),
+        ),
+      );
+      await vi.waitFor(() => expect(session.results).toEqual([a]));
+      session.emit({
+        type: "assistant_snapshot",
+        messageId: "current",
+        content: [
+          { type: "text", text: "private assistant text" },
+          { ...call("b"), arguments: { path: "private path" } },
+        ],
+        attribution: {},
+      });
+      session.park({ ...call("b"), arguments: { path: "private path" } });
+      const original: UnsequencedClaudeDriverEvent = {
+        type: "observation",
+        family: "diagnostic",
+        subtype: "host-mcp-park",
+        data: { toolCallId: "b" },
+        attribution: {},
+      };
+      session.emit(original);
+      session.emit({
+        type: "message_end",
+        messageId: "current",
+        attribution: {},
+      });
+      const events = await second;
+      const trace = events.find(
+        (event) =>
+          event.type === "driver_event" &&
+          event.event.type === "observation" &&
+          event.event.subtype === "host-mcp-park",
+      );
+      expect(trace).toMatchObject({
+        type: "driver_event",
+        event: {
+          data: {
+            toolCallId: "b",
+            runtimeBoundary: {
+              roundDone: false,
+              messageCount: 1,
+              messages: [
+                {
+                  messageId: "current",
+                  ended: false,
+                  blockCount: 2,
+                  toolCallIds: ["b"],
+                },
+              ],
+              unendedMessageIds: ["current"],
+              proposalCount: 1,
+              proposalIds: ["b"],
+              unparkedProposalIds: [],
+              parkedCount: 1,
+              parkedIds: ["b"],
+              deliveredCount: 1,
+              deliveredIds: ["a"],
+            },
+          },
+        },
+      });
+      expect(JSON.stringify(trace)).not.toContain("private");
+      expect(original).toMatchObject({ data: { toolCallId: "b" } });
+      expect(
+        original.type === "observation" && original.data,
+      ).not.toHaveProperty("runtimeBoundary");
+      expect(outcome(events).reason).toBe("toolUse");
+    } finally {
+      await runtime.closeAll();
+    }
+  });
+
   it.each([false, true])(
     "rejects unsupported steering before replay when a parked session exists: %s",
     async (parked) => {
