@@ -51,10 +51,51 @@ if (args.includes("--version")) {
     });
   let client;
   let transport;
+  let boundaryTurn;
   const complete = () => send({ type: "result", subtype: "success" });
   const user = async (packet) => {
-    send({ type: "fixture", subtype: "input", message: packet.message });
+    send({
+      type: "fixture",
+      subtype: "input",
+      message: packet.message,
+      priority: packet.priority,
+      uuid: packet.uuid,
+    });
     const action = packet.message.content.at(-1).text ?? "image";
+    if (boundaryTurn && packet.priority) {
+      if (packet.priority !== "next" || !packet.uuid)
+        throw new Error("Boundary input must carry next priority and a UUID");
+      // Native admission can wait on UserPromptSubmit. Neither a write nor a
+      // lifecycle frame for another command proves this input was queued.
+      send({
+        type: "command_lifecycle",
+        command_uuid: "00000000-0000-4000-8000-000000000000",
+        state: "queued",
+        uuid: "00000000-0000-4000-8000-000000000001",
+        session_id: "offline-session",
+      });
+      send({ type: "fixture", subtype: "steering-awaiting-admission" });
+      if (process.env.PCC_STEERING_ADMISSION_GATE) {
+        for (;;) {
+          try {
+            await readFile(process.env.PCC_STEERING_ADMISSION_GATE);
+            break;
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        }
+      }
+      boundaryTurn.steering.push(action);
+      send({
+        type: "command_lifecycle",
+        command_uuid: packet.uuid,
+        state: "queued",
+        uuid: "00000000-0000-4000-8000-000000000002",
+        session_id: "offline-session",
+      });
+      return;
+    }
     send({
       type: "system",
       subtype: "init",
@@ -165,6 +206,8 @@ if (args.includes("--version")) {
       }
       complete();
     } else if (action.startsWith("tools")) {
+      if (action === "tools-steering")
+        boundaryTurn = { steering: [], interrupted: false };
       const endpoint = config.mcpServers.host;
       transport = new StdioClientTransport({
         command: endpoint.command,
@@ -178,7 +221,12 @@ if (args.includes("--version")) {
         subtype: "tools",
         data: await client.listTools(),
       });
-      const ids = action === "tools-missing-meta" ? [""] : ["tool-b", "tool-a"];
+      const ids =
+        action === "tools-missing-meta"
+          ? [""]
+          : action === "tools-steering"
+            ? ["boundary-call"]
+            : ["tool-b", "tool-a"];
       await Promise.all(
         ids.map(async (id) => {
           try {
@@ -206,6 +254,15 @@ if (args.includes("--version")) {
           }
         }),
       );
+      if (boundaryTurn) {
+        // next input is consumed after tools settle, within the original turn.
+        send({
+          type: "fixture",
+          subtype: "boundary-consumed",
+          ...boundaryTurn,
+        });
+        boundaryTurn = undefined;
+      }
       complete();
     } else if (
       action.startsWith("permission") ||
@@ -322,6 +379,8 @@ if (args.includes("--version")) {
         resolve(packet.response);
       }
     } else if (packet.type === "control_request") {
+      if (packet.request.subtype === "interrupt" && boundaryTurn)
+        boundaryTurn.interrupted = true;
       if (packet.request.subtype === "initialize") {
         if (process.env.PCC_INIT === "missing") return;
         if (process.env.PCC_INIT === "exit") process.exit(0);

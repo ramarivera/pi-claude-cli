@@ -7,8 +7,8 @@ Select the `pi-claude-cli` provider in the host's model picker. CLI is the defau
 ## Install the release
 
 ```text
-pi install npm:@ramarivera/pi-claude-cli@0.4.1
-omp plugin install @ramarivera/pi-claude-cli@0.4.1
+pi install npm:@ramarivera/pi-claude-cli@0.4.2
+omp plugin install @ramarivera/pi-claude-cli@0.4.2
 ```
 
 Authenticate with `claude auth login`, restart your host, and select a `pi-claude-cli/...` model. The npm package name is scoped; the provider ID stays `pi-claude-cli`. See [release instructions](docs/releasing.md) and [supported versions](docs/compatibility.md).
@@ -37,6 +37,8 @@ Each host supplies its effective tools and native JSON schemas. Claude calls the
 Native Claude tools are disabled by default. Explicitly configured Claude tools or user MCP servers execute under Claude ownership. They aren't renamed into host tools. OMP keeps its own hashline, apply-patch and replacement edit formats, distinct glob/search tools and timeout units.
 
 The shared core reconciles streaming deltas and assistant snapshots, preserves thinking signatures and attributed progress, and reports result/error boundaries. Host history, tool schemas, cwd, branch and settings determine whether a resident session can continue. Divergent or imported history is rebuilt as labelled user-history replay; this isn't native restoration of private Claude session files. Failed turns don't automatically retry through the other driver.
+
+Both drivers support queued steering at host tool boundaries: supplemental input is admitted by Claude before the original tool results are released. Pi/OMP own the queue during inference. Immediate interruption during text generation isn't integrated; see [the versioned steering research](docs/research/claude-steering.md).
 
 ## Configuration
 
@@ -73,6 +75,10 @@ npm run verify:plan
 ```
 
 Offline tests don't make authenticated model calls. `npm run test:live` reports four skipped combinations unless `PI_CLAUDE_LIVE_E2E=1`; enabled runs require the actual hosts, official Claude runtime and selected credentials. They consume real account resources. The live harness and its receipts are documented under [live harness and receipts](docs/testing/live-harness.md).
+
+`npm run test:steering` runs offline boundary checks and skips its four actual-host
+cases unless `PI_CLAUDE_BOUNDARY_E2E=1`. Set `PI_CLAUDE_BOUNDARY_CASE=omp+cli`
+(or another host/driver pair) to select one paid queued-steering case.
 
 ## Architecture
 

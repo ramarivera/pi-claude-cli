@@ -370,25 +370,21 @@ describe("native OMP lifecycle", () => {
     expect(host.events.emit).toHaveBeenCalledOnce();
     expect(JSON.stringify(host.events.emit.mock.calls)).not.toContain("never");
   });
-  it("reports live steering unsupported without claiming queued steering", async () => {
+  it("doesn't warn about steering after an ordinary round with an empty host queue", async () => {
     const host = setup();
     const ctx = context();
     await host.emit("session_start", ctx);
-    const liveSteering = { claim: vi.fn(), wait: vi.fn() };
-    await host.stream(model, prompt, { liveSteering }).result();
-    expect(liveSteering.claim).not.toHaveBeenCalled();
-    expect(liveSteering.wait).not.toHaveBeenCalled();
-    expect(host.events.emit).toHaveBeenCalledWith(
-      "pi-claude-cli:capability",
-      expect.objectContaining({
-        capability: "live-steering",
-        supported: false,
-        driver: "cli",
-      }),
-    );
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+    // OMP supplies this channel on ordinary rounds even when no user steers.
+    const liveSteering = { claim: vi.fn(async () => undefined), wait: vi.fn() };
+    const result = await host.stream(model, prompt, { liveSteering }).result();
+    expect(result.stopReason).not.toBe("error");
+    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith(
       "pi-claude-cli-steering",
-      expect.stringContaining("queued input stays with OMP"),
+      expect.any(String),
+    );
+    expect(host.events.emit).not.toHaveBeenCalledWith(
+      "pi-claude-cli:capability",
+      expect.objectContaining({ capability: "live-steering" }),
     );
   });
   it("doesn't initialize the runtime for an already aborted provider request", async () => {

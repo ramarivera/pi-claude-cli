@@ -24,6 +24,7 @@ import { AsyncQueue, withinDeadline } from "./queue.js";
 import { HostMcpBridge, HOST_MCP_NAME } from "./host-mcp.js";
 import { jsonObject } from "./json.js";
 import { sdkError } from "./diagnostics.js";
+import { PromptReceipts } from "../prompt-receipts.js";
 
 /** Narrow public lifecycle seam for labelled offline transport doubles. */
 export interface SdkQuery extends AsyncIterable<unknown> {
@@ -53,7 +54,7 @@ export function createSdkDriver(options: SdkDriverOptions = {}): ClaudeDriver {
       persistedResume: true,
       structuredToolResults: true,
       images: true,
-      steering: "unsupported",
+      steering: "tool-boundary",
       interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
       forwardSubagentText: true,
@@ -100,6 +101,7 @@ async function loadOfficialSdk(): Promise<SdkModule> {
 
 interface QueuedPrompt {
   prompt: DriverPrompt;
+  uuid?: ReturnType<PromptReceipts["register"]>["uuid"];
   accept(): void;
   reject(error: Error): void;
 }
@@ -113,6 +115,14 @@ class SessionIdentityMismatchError extends Error {}
 
 class SdkSession implements ClaudeDriverSession {
   readonly events = new AsyncQueue<ClaudeDriverEvent>();
+  private readonly promptReceipts = new PromptReceipts((commandId, state) =>
+    this.emit({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "steering-admission",
+      data: { commandId, state },
+    }),
+  );
   private readonly prompts = new AsyncQueue<QueuedPrompt>();
   private readonly abortController = new AbortController();
   private readonly interactions = new Map<string, PendingInteraction>();
@@ -124,6 +134,7 @@ class SdkSession implements ClaudeDriverSession {
   private turnId?: string;
   private claudeSessionId?: string;
   private activePrompt?: QueuedPrompt;
+  private active = false;
   private closed = false;
   private finished = false;
   private queryClosed = false;
@@ -309,6 +320,7 @@ class SdkSession implements ClaudeDriverSession {
     for await (const queued of this.prompts) {
       this.activePrompt = queued;
       this.turnId = queued.prompt.turnId;
+      this.active = true;
       let content = [...queued.prompt.content];
       if (!replayed && this.request.resume.mode === "replay") {
         content = [
@@ -337,6 +349,8 @@ class SdkSession implements ClaudeDriverSession {
         parent_tool_use_id: null,
         client_composed: true,
         session_id: this.claudeSessionId,
+        ...(queued.prompt.priority ? { priority: queued.prompt.priority } : {}),
+        ...(queued.uuid ? { uuid: queued.uuid } : {}),
       };
       queued.accept();
       this.activePrompt = undefined;
@@ -348,9 +362,32 @@ class SdkSession implements ClaudeDriverSession {
     if (prompt.priority && prompt.priority !== "next") {
       return Promise.reject(new Error("SDK steering is unsupported"));
     }
-    return new Promise((accept, reject) =>
-      this.prompts.push({ prompt, accept, reject }),
-    );
+    if (
+      prompt.steering &&
+      (prompt.priority !== "next" ||
+        !this.active ||
+        this.turnId !== prompt.turnId)
+    )
+      return Promise.reject(
+        new Error(
+          "SDK steering requires the matching active turn and next priority",
+        ),
+      );
+    const receipt = prompt.steering
+      ? this.promptReceipts.register(this.request.settings.toolResultTimeoutMs)
+      : undefined;
+    const written = new Promise<void>((accept, reject) => {
+      try {
+        this.prompts.push({ prompt, uuid: receipt?.uuid, accept, reject });
+      } catch (error) {
+        if (receipt)
+          this.promptReceipts.cancel(receipt.uuid, "Steering write failed");
+        reject(error);
+      }
+    });
+    return receipt
+      ? Promise.all([written, receipt.accepted]).then(() => {})
+      : written;
   }
 
   async deliverToolResults(results: readonly HostToolResult[]): Promise<void> {
@@ -445,6 +482,12 @@ class SdkSession implements ClaudeDriverSession {
   private normalize(event: UnsequencedClaudeDriverEvent): void {
     // Only tools/call can attest that a host-owned operation actually parked.
     if (event.type === "host_tool_request") return;
+    if (
+      event.type === "turn_end" &&
+      !event.attribution.parentToolUseId &&
+      !event.attribution.agentId
+    )
+      this.active = false;
     if (event.type === "initialized") {
       const expected =
         this.claudeSessionId ??
@@ -464,6 +507,7 @@ class SdkSession implements ClaudeDriverSession {
     let reason: "closed" | "error" | "eof" = "eof";
     try {
       for await (const message of this.query) {
+        if (this.promptReceipts.handle(message)) continue;
         for (const event of this.normalizer.normalize(message))
           this.normalize(event);
       }
@@ -485,6 +529,7 @@ class SdkSession implements ClaudeDriverSession {
     } finally {
       const finalReason = this.closed ? "closed" : reason;
       this.closed = true;
+      this.promptReceipts.close();
       this.drain();
       try {
         await withinDeadline(this.hostMcp.close(), this.timeoutMs);
@@ -505,6 +550,8 @@ class SdkSession implements ClaudeDriverSession {
   }
 
   private drain(endInput = true): void {
+    this.active = false;
+    this.promptReceipts.close();
     this.hostMcp.cancel("Host tool call cancelled");
     for (const interaction of [...this.interactions.values()])
       interaction.cancel();
@@ -548,6 +595,7 @@ class SdkSession implements ClaudeDriverSession {
     const deadline = Date.now() + this.timeoutMs;
     let failure: { error: unknown } | undefined;
     this.closed = true;
+    this.promptReceipts.close();
     this.drain();
     try {
       await withinDeadline(

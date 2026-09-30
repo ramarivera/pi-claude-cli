@@ -24,6 +24,7 @@ import type {
 } from "../../contracts/index.js";
 import { EventQueue, JsonLines } from "./framing.js";
 import { ControlChannel } from "./controls.js";
+import { PromptReceipts } from "../prompt-receipts.js";
 
 const HOST_SERVER = "host";
 const SUPPORTED_VERSION = "2.1.285";
@@ -129,7 +130,7 @@ export function createCliDriver(
       persistedResume: false,
       structuredToolResults: true,
       images: true,
-      steering: "unsupported",
+      steering: "tool-boundary",
       interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
       forwardSubagentText: true,
@@ -230,6 +231,15 @@ interface ParkedCall {
 }
 class CliSession implements ClaudeDriverSession {
   readonly events = new EventQueue<ClaudeDriverEvent>();
+  private readonly promptReceipts = new PromptReceipts((commandId, state) =>
+    this.emit({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "steering-admission",
+      data: { commandId, state },
+      attribution: {},
+    }),
+  );
   private sequence = 0;
   private child!: ChildProcessWithoutNullStreams;
   private server!: Server;
@@ -435,9 +445,15 @@ class CliSession implements ClaudeDriverSession {
       requestedModel: this.request.model,
     });
     const frames = new JsonLines((packet) => {
+      if (this.promptReceipts.handle(packet)) return;
       if (this.controls.handle(packet)) return;
       for (const event of normalize.normalize(packet)) {
-        if (event.type === "turn_end") this.active = false;
+        if (
+          event.type === "turn_end" &&
+          !event.attribution.parentToolUseId &&
+          !event.attribution.agentId
+        )
+          this.active = false;
         this.emit(event);
       }
     });
@@ -759,9 +775,17 @@ class CliSession implements ClaudeDriverSession {
   async submitPrompt(prompt: DriverPrompt): Promise<void> {
     if (prompt.priority && prompt.priority !== "next")
       throw new Error("CLI steering priorities unsupported");
-    if (this.active) throw new Error("CLI session already has an active turn");
-    this.turnId = prompt.turnId;
-    this.active = true;
+    const steering = prompt.steering === "tool-boundary";
+    if (steering && (!this.active || this.turnId !== prompt.turnId))
+      throw new Error("CLI steering requires the matching active turn");
+    if (steering && prompt.priority !== "next")
+      throw new Error("CLI tool-boundary steering requires next priority");
+    if (this.active && !steering)
+      throw new Error("CLI session already has an active turn");
+    if (!steering) {
+      this.turnId = prompt.turnId;
+      this.active = true;
+    }
     const wire = (
       block: import("../../contracts/index.js").UserContent,
     ): unknown =>
@@ -788,14 +812,22 @@ class CliSession implements ClaudeDriverSession {
       }
       content.unshift(...history);
     }
+    const receipt = steering
+      ? this.promptReceipts.register(this.request.settings.toolResultTimeoutMs)
+      : undefined;
     try {
       await this.write({
         type: "user",
         message: { role: "user", content },
         parent_tool_use_id: null,
+        ...(prompt.priority ? { priority: prompt.priority } : {}),
+        ...(receipt ? { uuid: receipt.uuid } : {}),
       });
+      if (receipt) await receipt.accepted;
       this.replayed = true;
     } catch (error) {
+      if (receipt)
+        this.promptReceipts.cancel(receipt.uuid, "Steering write failed");
       this.active = false;
       this.fail("transport", "Claude prompt write failed");
       throw error;
@@ -858,6 +890,7 @@ class CliSession implements ClaudeDriverSession {
   }
   private async shutdownResources(): Promise<void> {
     this.closed = true;
+    this.promptReceipts.close();
     await this.settleCalls("Host session closed");
     try {
       let controlTimer: ReturnType<typeof setTimeout> | undefined;

@@ -226,6 +226,8 @@ export interface DriverPrompt {
   turnId: string;
   content: readonly UserContent[];
   priority?: "now" | "next" | "later";
+  /** Await native queue admission before releasing parked host tools. */
+  steering?: "tool-boundary";
 }
 
 export interface EventAttribution {

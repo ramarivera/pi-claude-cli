@@ -95,3 +95,28 @@ The OMP observer subscribes to the native `pi-claude-cli:observation` progress b
 The accepted serialized dispatch correction lets a completed authoritative batch with at least one real MCP park matching the completed ID, name and arguments expose the host tool round. Core buffers other completed-proposal results until later actual handlers park and ID/name/arguments validate; released late calls aren't projected as new native tool proposals. SDK handlers never report early fabricated success, and only actual MCP parking emits `host_tool_request`. Bounded timers, cancellation, ownership, completed-proposal correlation and exactly-once settlement stay required. Fresh deterministic regressions and all four same-revision standard cases passed, including the selected CLI retry. The accepted live SDK runs used separate edit/sentinel messages; the serialized-batch ordering specifically has deterministic regression coverage and the historical failed trace.
 
 The current synthetic and initialize-recording fixture scope is complete. Optional future raw assistant/tool recordings would extend it. Live receipts establish host assertions only when actually run; loading receipts and deterministic conformance fixtures can't replace authenticated results.
+
+## Queued boundary steering
+
+`npm run test:steering` runs the boundary harness's offline fixture checks and
+skips authenticated cases by default. Opt in to a selected actual host/driver
+case with Nushell:
+
+```nu
+with-env { PI_CLAUDE_BOUNDARY_E2E: "1", PI_CLAUDE_BOUNDARY_CASE: "omp+cli" } {
+  npm run test:steering
+}
+```
+
+The other selections are `omp+sdk`, `pi+cli` and `pi+sdk`; omit the case variable
+to run all four. Each case uses one resident Claude session capped at $0.25 in
+reported runtime cost, eight turns and 512 output tokens per response. It sends
+a literal hello, then holds a native `pcc_gate` tool behind an owned release
+marker, queues an RPC steer while that tool runs, and releases its original
+result. Assertions preserve the original nonce/result exactly once, the
+supplemental instruction, session/model identity and natural transport cleanup.
+OMP's real `ctx.ui.setStatus` is observed to catch the unsolicited-warning bug.
+Receipts retain only bounded IDs, counts and marker-presence booleans, including
+failed semantic checks; no prompt or assistant text is persisted by this suite.
+This exercises host tool-boundary steering, not immediate during-token input
+through OMP's `LiveSteering.claim()`.

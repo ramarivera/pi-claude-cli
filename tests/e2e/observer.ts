@@ -1,9 +1,20 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** Only synthetic sandbox content and whitelisted public transport metadata. */
 export function record(type: string, data: unknown): void {
   const path = process.env.PCC_E2E_OBSERVATIONS;
   if (!path) throw new Error("PCC_E2E_OBSERVATIONS is required");
+  if (process.env.PCC_E2E_BOUNDARY === "1") {
+    // A failed model may call an unexpected tool. Keep its arguments, returned
+    // text, and native payloads out of the boundary fixture's observation file.
+    if (type === "tool-start" || type === "tool-end")
+      data = metadata(data, ["toolCallId", "toolName"], ["isError"]);
+    else if (type === "canonical-tool")
+      data = { call: metadata(object(data).call, ["id", "name"]) };
+    else if (type === "initialized")
+      data = metadata(data, ["claudeSessionId", "model", "runtimeVersion"]);
+  }
   appendFileSync(path, JSON.stringify({ type, data }) + "\n", { mode: 0o600 });
 }
 
@@ -45,6 +56,31 @@ export function providerPrompt(payload: unknown): void {
       ? payload.systemPrompt
       : undefined;
   systemPrompt("before_provider_request", prompt);
+  if (process.env.PCC_E2E_BOUNDARY === "1") {
+    const input = object(object(payload).input);
+    const marker = process.env.PCC_E2E_STEER_MARKER;
+    const steering = Array.isArray(input.steering) ? input.steering : [];
+    const texts = steering.slice(0, 32).flatMap((block) => {
+      const part = object(block);
+      return part.type === "text" && typeof part.text === "string"
+        ? [part.text]
+        : [];
+    });
+    const length = texts.reduce((total, text) => total + text.length, 0);
+    record("steering-input", {
+      kind:
+        input.kind === "prompt" || input.kind === "tool-results"
+          ? input.kind
+          : "unknown",
+      markerConfigured: Boolean(marker),
+      markerIncluded: Boolean(
+        marker && texts.some((text) => text.slice(0, 65536).includes(marker)),
+      ),
+      parts: Math.min(steering.length, 32),
+      length: Math.min(length, 65536),
+      truncated: steering.length > 32 || length > 65536,
+    });
+  }
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -107,6 +143,107 @@ function boundedObjects(
     : undefined;
 }
 
+/** Native admission/consumption metadata only; never capture an input packet. */
+export function steeringAdmission(value: unknown): void {
+  const event = object(value);
+  const source = object(event.data);
+  const commandId = safeId(source.commandId);
+  if (
+    event.type !== "observation" ||
+    event.family !== "diagnostic" ||
+    event.subtype !== "steering-admission" ||
+    !safeCount(event.sequence) ||
+    !commandId ||
+    (source.state !== "queued" && source.state !== "started")
+  )
+    return;
+  record("steering-admission", {
+    commandId,
+    state: source.state,
+    sequence: event.sequence,
+  });
+}
+
+let nativeOutputScope: string | undefined;
+const nativeTextTails = new Map<string, string>();
+/** Compare synthetic markers against native output without writing any text. */
+export function nativeOutput(value: unknown): void {
+  const marker = safeId(process.env.PCC_E2E_STEER_MARKER);
+  if (process.env.PCC_E2E_BOUNDARY !== "1" || !marker) return;
+  const event = object(value);
+  const eventType = event.type;
+  if (
+    !safeCount(event.sequence) ||
+    (eventType !== "assistant_snapshot" &&
+      eventType !== "content_start" &&
+      eventType !== "content_delta" &&
+      eventType !== "turn_end")
+  )
+    return;
+  const scope = `${process.env.PCC_E2E_OBSERVATIONS}:${marker}`;
+  if (scope !== nativeOutputScope) {
+    nativeTextTails.clear();
+    nativeOutputScope = scope;
+  }
+  const messageId =
+    safeId(event.messageId) ?? safeId(object(event.attribution).messageId);
+  const block = object(event.content);
+  const delta = object(event.delta);
+  const texts =
+    eventType === "assistant_snapshot" && Array.isArray(event.content)
+      ? event.content.slice(0, 32).flatMap((part) => {
+          const content = object(part);
+          return content.type === "text" && typeof content.text === "string"
+            ? [content.text]
+            : [];
+        })
+      : eventType === "content_start" &&
+          block.type === "text" &&
+          typeof block.text === "string"
+        ? [block.text]
+        : eventType === "content_delta" &&
+            delta.kind === "text" &&
+            typeof delta.text === "string"
+          ? [delta.text]
+          : eventType === "turn_end" && typeof event.resultText === "string"
+            ? [event.resultText]
+            : [];
+  const text = texts
+    .map((part) => part.slice(0, 65536))
+    .join("")
+    .slice(0, 65536);
+  let markerIncluded = text.includes(marker);
+  if (
+    messageId &&
+    safeCount(event.index) &&
+    (eventType === "content_start" || eventType === "content_delta")
+  ) {
+    const key = `${messageId}:${event.index}`;
+    const previous =
+      eventType === "content_delta" ? (nativeTextTails.get(key) ?? "") : "";
+    const combined = previous + text;
+    markerIncluded = combined.includes(marker);
+    if (nativeTextTails.size >= 128 && !nativeTextTails.has(key))
+      nativeTextTails.delete(nativeTextTails.keys().next().value!);
+    // Only a bounded suffix lives transiently in the observer to detect a marker
+    // split across streamed chunks. No part of that suffix enters a receipt.
+    nativeTextTails.set(
+      key,
+      marker.length > 1 ? combined.slice(-(marker.length - 1)) : "",
+    );
+  }
+  record("native-output", {
+    eventType,
+    messageId,
+    sequence: event.sequence,
+    length: Math.min(
+      texts.reduce((length, part) => length + part.length, 0),
+      65536,
+    ),
+    markerIncluded,
+  });
+}
+
 /** Independently whitelist the dedicated safe bus; raw spreads are forbidden. */
 export function nativeDiagnostic(value: unknown): void {
   const envelope = object(value),
@@ -121,26 +258,33 @@ export function nativeDiagnostic(value: unknown): void {
       "core-message-stop",
       "core-assistant-snapshot",
       "host-mcp-park",
+      "steering-admission",
     ].includes(String(event.subtype))
   )
     return;
   const source = object(event.data);
   const data =
-    event.subtype === "host-mcp-park"
-      ? metadata(source, ["toolUseId", "toolName"])
-      : metadata(
-          source,
-          ["messageId", "snapshotId"],
-          [
-            "ended",
-            "stopReasonPresent",
-            "snapshotKnownMessage",
-            "snapshotFull",
-            "snapshotStopReasonPresent",
-          ],
-          ["blockCount"],
-        );
-  if (event.subtype === "host-mcp-park") {
+    event.subtype === "steering-admission"
+      ? metadata(source, ["commandId"])
+      : event.subtype === "host-mcp-park"
+        ? metadata(source, ["toolUseId", "toolName"])
+        : metadata(
+            source,
+            ["messageId", "snapshotId"],
+            [
+              "ended",
+              "stopReasonPresent",
+              "snapshotKnownMessage",
+              "snapshotFull",
+              "snapshotStopReasonPresent",
+            ],
+            ["blockCount"],
+          );
+  if (event.subtype === "steering-admission") {
+    if (source.state === "queued" || source.state === "started")
+      data.state = source.state;
+    steeringAdmission(event);
+  } else if (event.subtype === "host-mcp-park") {
     if (source.serverName === "host") data.serverName = "host";
   } else {
     for (const key of ["previousActiveMessageId", "activeMessageId"]) {
@@ -266,7 +410,9 @@ export function normalizedObservation(value: unknown): void {
     isError: typeof event.isError === "boolean" ? event.isError : undefined,
     call:
       event.type === "host_tool_request" &&
-      ["read", "edit", "pcc_sentinel", "pcc_slow"].includes(String(call.name))
+      ["read", "edit", "pcc_sentinel", "pcc_slow", "pcc_gate"].includes(
+        String(call.name),
+      )
         ? {
             id: call.id,
             name: call.name,
@@ -278,6 +424,83 @@ export function normalizedObservation(value: unknown): void {
 }
 
 let calls = 0;
+
+const observedUis = new WeakSet<object>();
+/** Capture the native OMP status call even when the RPC UI suppresses it. */
+export function observeSteeringStatus(
+  context: {
+    ui: { setStatus(key: string, text: string | undefined): void };
+  },
+  stage: string,
+): void {
+  if (process.env.PCC_E2E_BOUNDARY !== "1") return;
+  const ui = context.ui;
+  if (observedUis.has(ui)) return;
+  const original = ui.setStatus;
+  ui.setStatus = function (key, text) {
+    if (key === "pi-claude-cli-steering")
+      record("steering-status", {
+        key,
+        hasText: typeof text === "string",
+        length: typeof text === "string" ? text.length : 0,
+      });
+    original.call(this, key, text);
+  };
+  observedUis.add(ui);
+  record("steering-status-observer", { stage });
+}
+
+let gateCalls = 0;
+/** A real native tool stays parked until the RPC controller releases its file. */
+export async function gate(
+  toolCallId: string,
+  signal: AbortSignal | undefined,
+) {
+  const nonce = process.env.PCC_E2E_NONCE;
+  const temp = process.env.TMPDIR;
+  const release = process.env.PCC_E2E_GATE_RELEASE;
+  if (
+    !nonce ||
+    !temp ||
+    !release ||
+    release !== join(dirname(temp), "gate-release")
+  )
+    throw new Error("Native E2E gate requires its owned release marker");
+  const call = { toolCallId, calls: ++gateCalls };
+  record("gate-start", call);
+  await new Promise<void>((resolve, reject) => {
+    const poll = setInterval(() => {
+      if (existsSync(release)) finish();
+    }, 25);
+    const timeout = setTimeout(() => {
+      record("gate-timeout", call);
+      finish(new Error("Native E2E gate release timed out"));
+    }, 12000);
+    function finish(error?: Error) {
+      clearInterval(poll);
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", aborted);
+      if (error) reject(error);
+      else resolve();
+    }
+    function aborted() {
+      record("gate-abort", call);
+      finish(new Error("Native E2E gate was aborted"));
+    }
+    if (signal?.aborted) aborted();
+    else signal?.addEventListener("abort", aborted, { once: true });
+  });
+  const structuredContent = { ...call, nonce };
+  record("gate-release", call);
+  return {
+    content: [
+      { type: "text" as const, text: JSON.stringify(structuredContent) },
+    ],
+    details: { structuredContent, _meta: { fixture: "native-boundary-gate" } },
+    structuredContent,
+  };
+}
+
 export async function sentinel(toolCallId: string) {
   const nonce = process.env.PCC_E2E_NONCE;
   if (!nonce) throw new Error("PCC_E2E_NONCE is required");

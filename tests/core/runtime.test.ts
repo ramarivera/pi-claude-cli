@@ -860,7 +860,8 @@ describe("Claude runtime session ownership (offline)", () => {
         "a",
       ]);
       expect(session.prompts[1]).toMatchObject({
-        priority: "now",
+        priority: "next",
+        steering: "tool-boundary",
         content: [{ type: "text", text: "continue" }],
       });
     } finally {
@@ -2763,7 +2764,8 @@ describe("Claude runtime session ownership (offline)", () => {
     expect(next.reason).toBe("stop");
     expect(accepted).toEqual(["steering", "results"]);
     expect(session.prompts[1]).toMatchObject({
-      priority: "now",
+      priority: "next",
+      steering: "tool-boundary",
       content: steering,
     });
     await runtime.closeAll();

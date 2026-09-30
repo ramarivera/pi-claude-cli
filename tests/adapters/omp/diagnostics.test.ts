@@ -25,6 +25,29 @@ function diagnostic(
   };
 }
 describe("native metadata-only diagnostics", () => {
+  it("projects native admission metadata without rendering arbitrary lifecycle payloads", () => {
+    const event = diagnostic("steering-admission", {
+      commandId: "command",
+      state: "started",
+      content: "secret-never",
+      raw: { password: "secret-never" },
+    });
+    expect(projectOmpDiagnostic(event)?.data).toEqual({
+      commandId: "command",
+      state: "started",
+    });
+    expect(JSON.stringify(projectOmpDiagnostic(event))).not.toContain(
+      "secret-never",
+    );
+    expect(
+      projectOmpDiagnostic(
+        diagnostic("steering-admission", {
+          commandId: "command",
+          state: "secret-never",
+        }),
+      )?.data,
+    ).toEqual({ commandId: "command" });
+  });
   it.each([
     "core-message-start",
     "core-message-stop",

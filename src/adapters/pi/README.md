@@ -55,9 +55,10 @@ HTTP retry-delay setting is inapplicable to these transports; custom retry
 delays and provider retry counts are rejected. Custom fetch/headers, sampling,
 explicit transport preferences, WebSocket settings, metadata, tool choice,
 deferred responses and custom thinking token budgets remain unsupported. Both
-current drivers reject tool-boundary steering before opening/replaying a query or
-consuming tool results; the adapter retains the steering input so core can report
-that unsupported capability without silently dropping or repeating it.
+current drivers accept queued tool-boundary steering. Core admits supplemental
+input with Claude's `next` priority before releasing original tool results;
+UUID-correlated native queue receipts distinguish admission from a local pipe
+write. Immediate during-token preemption remains unsupported.
 
 Each extension instance owns its runtime and a map of host session identities.
 Ordinary leaf changes keep the same branch and history revision. Successful

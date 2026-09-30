@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,10 +100,18 @@ async function setup(
   const directory = await mkdtemp(join(tmpdir(), "pcc-control-test-"));
   disposers.push(() => rm(directory, { recursive: true, force: true }));
   const receipt = join(directory, "receipt.json");
+  const steeringGate = join(directory, "admit-steering");
   const driver = createCliDriver({
     executable: fixture,
     normalizerFactory: normalizer,
-    environment: { ...environment, PCC_RECEIPT: receipt, ...extraEnv },
+    environment: {
+      ...environment,
+      PCC_RECEIPT: receipt,
+      ...(extraEnv.PCC_GATE_STEERING === "1"
+        ? { PCC_STEERING_ADMISSION_GATE: steeringGate }
+        : {}),
+      ...extraEnv,
+    },
     shutdownTimeoutMs: 60,
   });
   const session = await driver.openSession(request);
@@ -112,6 +120,7 @@ async function setup(
     session,
     iterator: session.events[Symbol.asyncIterator](),
     receipt,
+    steeringGate,
     driver,
   };
 }
@@ -158,9 +167,91 @@ describe("current CLI controls (offline bidirectional child double)", () => {
       data: { request: { subtype: "initialize", supportedDialogKinds: [] } },
     });
     expect(driver.capabilities).toMatchObject({
-      steering: "unsupported",
+      steering: "tool-boundary",
       interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
+    });
+  });
+  it("admits same-turn boundary steering before safely releasing the parked native MCP result", async () => {
+    const { session, iterator, steeringGate } = await setup(input(), {
+      PCC_GATE_STEERING: "1",
+    });
+    const boundary = {
+      turnId: "tools-steering",
+      content: [{ type: "text" as const, text: "Use the corrected file name" }],
+      priority: "next" as const,
+      steering: "tool-boundary" as const,
+    };
+    await expect(session.submitPrompt(boundary)).rejects.toThrow(
+      "matching active turn",
+    );
+    await prompt(session, "tools-steering");
+    expect(await next(iterator, "host_tool_request")).toMatchObject({
+      call: { id: "boundary-call", name: "edit" },
+      attribution: { turnId: "tools-steering" },
+    });
+
+    for (const turnId of ["different-turn", ""])
+      await expect(
+        session.submitPrompt({ ...boundary, turnId }),
+      ).rejects.toThrow("matching active turn");
+    await expect(
+      session.submitPrompt({ ...boundary, priority: undefined }),
+    ).rejects.toThrow("requires next priority");
+    await expect(
+      session.submitPrompt({ ...boundary, priority: "now" }),
+    ).rejects.toThrow("priorities unsupported");
+    await expect(
+      session.submitPrompt({ ...boundary, steering: undefined }),
+    ).rejects.toThrow("already has an active turn");
+
+    let accepted = false;
+    const submission = session.submitPrompt(boundary).then(() => {
+      accepted = true;
+    });
+    expect(await next(iterator, "observation", "input")).toMatchObject({
+      data: {
+        priority: "next",
+        uuid: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
+        message: { content: boundary.content },
+      },
+      attribution: { turnId: "tools-steering" },
+    });
+    await next(iterator, "observation", "steering-awaiting-admission");
+    // The child has read stdin and emitted an unrelated command's queue ack.
+    expect(accepted).toBe(false);
+    await writeFile(steeringGate, "admit");
+    await submission;
+    expect(accepted).toBe(true);
+    await session.deliverToolResults([
+      {
+        toolCallId: "boundary-call",
+        toolName: "edit",
+        content: [{ type: "text", text: "Host edit completed" }],
+        isError: false,
+      },
+    ]);
+    expect(await next(iterator, "observation", "tool-result")).toMatchObject({
+      data: {
+        id: "boundary-call",
+        result: {
+          content: [{ type: "text", text: "Host edit completed" }],
+          isError: false,
+        },
+      },
+      attribution: { turnId: "tools-steering" },
+    });
+    expect(
+      await next(iterator, "observation", "boundary-consumed"),
+    ).toMatchObject({
+      data: { steering: ["Use the corrected file name"], interrupted: false },
+      attribution: { turnId: "tools-steering" },
+    });
+    expect(await next(iterator, "turn_end")).toMatchObject({
+      status: "success",
+      attribution: { turnId: "tools-steering" },
     });
   });
   it.each(["error", "bad-nesting", "exit", "missing"])(

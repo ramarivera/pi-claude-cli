@@ -1,11 +1,14 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  gate,
+  nativeOutput,
   providerPrompt,
   record,
   response,
   sentinel,
   slow,
+  steeringAdmission,
   systemPrompt,
 } from "./observer.js";
 
@@ -21,11 +24,13 @@ export default function register(api: ExtensionAPI): void {
   api.on("provider_stream_event", (event) => {
     const data = event.data;
     if (typeof data !== "object" || data === null) return;
+    nativeOutput(data);
     // Canonical events contain synthetic test data; avoid arbitrary raw diagnostics.
     if ("type" in data && data.type === "host_tool_request")
       record("canonical-tool", data);
     else if ("type" in data && data.type === "initialized")
       record("initialized", data);
+    else steeringAdmission(data);
   });
   api.on("tool_execution_start", (event) => record("tool-start", event));
   api.on("tool_execution_end", (event) => record("tool-end", event));
@@ -36,6 +41,14 @@ export default function register(api: ExtensionAPI): void {
       "Call exactly once when requested. Returns a structured nonce and execution counter; report the nonce exactly.",
     parameters: Type.Object({}),
     execute: sentinel,
+  });
+  api.registerTool({
+    name: "pcc_gate",
+    label: "E2E boundary gate",
+    description:
+      "Call exactly once when requested. Waits for the sandbox controller, then returns a nonce that must be reported exactly.",
+    parameters: Type.Object({}),
+    execute: (id, _params, signal) => gate(id, signal),
   });
   api.registerTool({
     name: "pcc_slow",

@@ -1,6 +1,6 @@
 {
   "name": "@ramarivera/pi-claude-cli",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Pi and Oh My Pi extension with a shared Claude core and selectable CLI or official Agent SDK transport",
   "main": "index.ts",
   "keywords": [
@@ -61,6 +61,7 @@
     "prepare": "husky",
     "test:offline": "vitest run --reporter=dot",
     "test:live": "node tests/run-live.mjs",
+    "test:steering": "node --test tests/e2e/boundary-steering.test.mjs",
     "test:contracts": "vitest run tests/contracts tests/conformance --reporter=dot",
     "verify:plan": "node openspec/changes/modernize-claude-runtime/sync-beads.mjs",
     "typecheck:pi": "tsc --noEmit -p tsconfig.pi.json",

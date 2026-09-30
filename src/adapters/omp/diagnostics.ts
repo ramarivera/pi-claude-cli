@@ -9,6 +9,7 @@ const subtypes = new Set([
   "core-message-stop",
   "core-assistant-snapshot",
   "host-mcp-park",
+  "steering-admission",
 ]);
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -105,15 +106,20 @@ export function projectOmpDiagnostic(
   )
     return undefined;
   const data =
-    event.subtype === "host-mcp-park"
-      ? fields(event.data, ["toolUseId", "toolName"], [], [])
-      : fields(
-          event.data,
-          ["messageId"],
-          ["ended", "stopReasonPresent"],
-          ["blockCount"],
-        );
-  if (event.subtype === "host-mcp-park") {
+    event.subtype === "steering-admission"
+      ? fields(event.data, ["commandId"], [], [])
+      : event.subtype === "host-mcp-park"
+        ? fields(event.data, ["toolUseId", "toolName"], [], [])
+        : fields(
+            event.data,
+            ["messageId"],
+            ["ended", "stopReasonPresent"],
+            ["blockCount"],
+          );
+  if (event.subtype === "steering-admission") {
+    if (event.data.state === "queued" || event.data.state === "started")
+      data.state = event.data.state;
+  } else if (event.subtype === "host-mcp-park") {
     if (event.data.serverName === "host") data.serverName = "host";
   } else {
     for (const key of ["previousActiveMessageId", "activeMessageId"]) {

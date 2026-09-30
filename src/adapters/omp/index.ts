@@ -105,8 +105,6 @@ export function registerOmpAdapter(
               /* Cleanup is retained in active.cleanup. */
             });
           });
-          if (streamOptions.liveSteering)
-            lifecycle.unsupportedSteering(api, state, configuration.driver);
           const replacement = await withSignal(
             Promise.resolve(
               streamOptions.onPayload?.(

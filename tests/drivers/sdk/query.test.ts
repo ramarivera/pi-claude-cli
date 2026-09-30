@@ -109,6 +109,114 @@ async function open(
 }
 
 describe("official SDK query (offline doubles)", () => {
+  it("waits for native admission of same-turn next input, beyond the SDK transport write", async () => {
+    const { session, t } = await open();
+    const events = session.events[Symbol.asyncIterator]();
+    const initial = session.submitPrompt({ turnId: "turn", content: [] });
+    await t.input.next();
+    const incoming = t.input.next();
+    await initial;
+    t.output.push({
+      type: "turn_end",
+      status: "success",
+      subtype: "success",
+      isError: false,
+      attribution: { parentToolUseId: "native-agent", agentId: "child" },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: "turn_end",
+      attribution: { agentId: "child" },
+    });
+    let admitted = false;
+    const steering = session
+      .submitPrompt({
+        turnId: "turn",
+        content: [{ type: "text", text: "keep the original result" }],
+        priority: "next",
+        steering: "tool-boundary",
+      })
+      .then(() => {
+        admitted = true;
+      });
+    const packet = (await incoming).value!;
+    expect(packet).toMatchObject({
+      priority: "next",
+      message: {
+        content: [{ type: "text", text: "keep the original result" }],
+      },
+    });
+    expect(packet.uuid).toEqual(expect.any(String));
+    const idle = t.input.next();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(admitted).toBe(false);
+    t.output.push({
+      type: "command_lifecycle",
+      command_uuid: "other",
+      state: "queued",
+    });
+    t.output.push({
+      type: "command_lifecycle",
+      command_uuid: packet.uuid,
+      state: "started",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(admitted).toBe(false);
+    t.output.push({
+      type: "command_lifecycle",
+      command_uuid: packet.uuid,
+      state: "queued",
+    });
+    await steering;
+    expect((await events.next()).value).toMatchObject({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "steering-admission",
+      data: { commandId: packet.uuid, state: "queued" },
+    });
+    t.output.push({
+      type: "observation",
+      family: "status",
+      subtype: "fixture",
+      data: {},
+      attribution: {},
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: "observation",
+      subtype: "fixture",
+      sequence: 3,
+      attribution: { turnId: "turn" },
+    });
+    await session.close();
+    expect(await idle).toMatchObject({ done: true });
+  });
+
+  it("rejects boundary input after the native turn finished", async () => {
+    const { session, t } = await open();
+    const events = session.events[Symbol.asyncIterator]();
+    const initial = session.submitPrompt({ turnId: "turn", content: [] });
+    await t.input.next();
+    const idle = t.input.next();
+    await initial;
+    t.output.push({
+      type: "turn_end",
+      status: "success",
+      subtype: "success",
+      isError: false,
+      attribution: {},
+    });
+    await events.next();
+    await expect(
+      session.submitPrompt({
+        turnId: "turn",
+        content: [],
+        priority: "next",
+        steering: "tool-boundary",
+      }),
+    ).rejects.toThrow("matching active turn");
+    await session.close();
+    expect(await idle).toMatchObject({ done: true });
+  });
+
   it("honors explicit effort over conflicting inherited runtime settings", async () => {
     const { t } = await open(transport(), request(), {
       ...cleanEnvironment,
@@ -534,7 +642,7 @@ describe("official SDK query (offline doubles)", () => {
     await expect(elicitation).resolves.toMatchObject({ action: "cancel" });
   });
 
-  it("reports steering as unsupported and replays labelled history under a fresh identity", async () => {
+  it("rejects immediate preemption and replays labelled history under a fresh identity", async () => {
     const r = request();
     r.resume = {
       mode: "replay",

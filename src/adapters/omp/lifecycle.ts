@@ -274,24 +274,6 @@ export class OmpLifecycle {
       event: structuredClone(event),
     });
   }
-  unsupportedSteering(
-    api: ExtensionAPI,
-    state: OmpSessionState,
-    driver: "cli" | "sdk",
-  ): void {
-    state.context.ui.setStatus(
-      "pi-claude-cli-steering",
-      `Claude ${driver}: live steering unsupported; queued input stays with OMP`,
-    );
-    api.events.emit("pi-claude-cli:capability", {
-      capability: "live-steering",
-      supported: false,
-      driver,
-      owner: "claude",
-      hostSession: { ...state.identity },
-      hostAgent: { ...state.context.agent },
-    });
-  }
   register(api: ExtensionAPI): void {
     api.on("session_start", async (_event, ctx) => {
       const existing = this.forContext(ctx);

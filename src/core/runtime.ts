@@ -1359,7 +1359,9 @@ export function createClaudeRuntime(
                 session.driver.submitPrompt({
                   turnId: session.turnId ?? request.roundId,
                   content: request.input.steering,
-                  priority: "now",
+                  // `now` aborts running MCP calls in the pinned Claude CLI.
+                  priority: "next",
+                  steering: "tool-boundary",
                 }),
                 round.finished,
               ]);

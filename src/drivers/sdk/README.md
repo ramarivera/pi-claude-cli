@@ -10,8 +10,13 @@ The driver passes explicit cwd, model, system prompt, executable, effort and lim
 to official `query`, with a persistent `AsyncIterable<SDKUserMessage>` prompt input.
 Acknowledgment occurs when the SDK resumes the input generator after consuming
 the message. The event pump continues across result boundaries and host tool
-rounds. Streamed user messages omit `uuid` so the official runtime assigns it.
-Prompt priorities other than absent or `next` fail as unsupported steering.
+rounds. Ordinary messages omit `uuid` so the official runtime assigns it.
+Tool-boundary steering preserves the active turn, sends `next` and a UUID, and
+awaits a matching native `command_lifecycle` state `queued` before core releases
+parked results. These internal receipt frames are pinned runtime behavior and
+aren't user-facing observations. A missing receipt times out; close/interrupt
+rejects outstanding receipts. Prompt priorities other than absent or `next` fail
+as unsupported immediate preemption. See [steering research](../../../docs/research/claude-steering.md).
 
 Login mode preserves the selected `CLAUDE_CONFIG_DIR` and rejects inherited
 credential, endpoint and cloud-provider overrides. Explicit API-key mode clears
