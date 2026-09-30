@@ -2,7 +2,9 @@
 
 `tests/e2e/live.test.mjs` defines four authenticated cases: Pi + CLI, Pi + SDK, OMP + CLI, and OMP + SDK. Every case loads the production entrypoint directly into the actual host RPC process. The additional native extension registers only the sentinel, cancellable slow tool, and observations; it doesn't replace the runtime, driver, provider, or inference.
 
-Authenticated inference remains **unverified** until the coordinator runs the enabled matrix and reviews its receipts. The verification lane ran no inference. Its actual loading check passed all four combinations on September 30, 2026, with Pi 0.99.1 and compiled OMP 18.4.4: custom provider/model selection, explicit thinking off, extension loading, retry/compaction controls, and native OMP hashline `{ input }` schema. Loading doesn't establish authentication, resident Claude behavior, tool execution, restoration, or abort behavior.
+The coordinator's authenticated Pi + CLI and Pi + SDK cases passed all seven phases with natural cleanup on September 30, 2026, at `102c455`, and passed again in the `b02eed9` matrix. Native OMP's two cases failed before driver initialization because the adapter rejected the host's injected `fetch` option; their usage was zero and cleanup was natural. OMP authenticated execution and the complete matrix remain pending while its native option handling is corrected. The verification lane ran no inference.
+
+Actual loading passed all four combinations with Pi 0.99.1 and compiled OMP 18.4.4: custom provider/model selection, explicit thinking off, extension loading, retry/compaction controls, and native OMP hashline `{ input }` schema. Loading doesn't establish authentication, resident Claude behavior, tool execution, restoration, or abort behavior. Reviewed receipt paths and current integrated gates are recorded in [the execution log](../../openspec/changes/modernize-claude-runtime/execution.md).
 
 ## Commands
 
@@ -51,6 +53,8 @@ Each case submits seven synthetic user prompts across an initial and restored ho
 
 Pi completion requires `agent_settled` and a nonstreaming state. OMP requires the correlated `prompt_result`, `session_settled`, and `get_state.isSettled`. Command acceptance alone never counts as inference completion.
 
+The initial text instruction is `No tools. Follow the system-required prefix, then reply with READY.` The final instruction uses `AFTER_ABORT` in the same wording. Neither user prompt includes the distinctive system marker. This avoids conflicting exact-answer instructions while preserving the assertion that the response begins with the effective system-required prefix and includes the expected reply.
+
 The exact observed model is `claude-haiku-4-5-20251001` under `pi-claude-cli`, with thinking explicitly off. Official Claude 2.1.285 initialize metadata doesn't advertise effort support for Haiku. Bounds are eight turns, 512 output tokens, $0.25 reported query-budget limit, 15 seconds for host tool results, three seconds for driver shutdown, and 180 seconds wall time per case. Every RPC wait/send checks the case deadline and Node test context AbortSignal; failure exits through awaited cleanup. The 210-second Node timeout leaves room for cleanup. Native cache warming is stopped by the observer; RPC disables automatic retry and compaction.
 
 The eight-turn bound is conservative: installed SDK 0.3.285 `sdk.d.ts` describes `maxTurns` as a query conversation-turn limit without promising reset per submitted input. The [official streaming input example](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode) uses one persistent query for multiple messages with an explicit turn bound. This harness retains a bound large enough for resident native read/edit/sentinel rounds rather than depending on an undocumented per-input reset.
@@ -69,4 +73,6 @@ Receipts default to `<scratch-root>/receipts`; `PI_CLAUDE_E2E_RECEIPT_DIR` can o
 
 Loading receipts use `actual-host-rpc-no-inference` provenance and include selection, RPC commands, failure status, and cleanup identities. Process diagnostics retain only PID, native process name, parent PID, state, and start identity; they don't collect process argv or environment. This distinguishes imported native MCP helpers from Claude driver resources without attributing loading-only children to a driver query.
 
-Real model payload recordings remain a separate fixture gate. These receipts establish host assertions when actually run; the loading receipts and synthetic conformance fixtures cannot replace authenticated results.
+Response diagnostics retain synthetic assistant text, stop reason, public error and numeric usage/cost even when a semantic assertion fails. Local native `message_end` frames survive case cancellation or an unavailable RPC read; bounded optional `get_messages` and `get_session_stats` reads supplement them when possible. Native public `before_agent_start` and `before_provider_request` hooks report only effective system-prompt availability, marker presence, length and part count. They never record full system prompts, credentials or arbitrary provider payloads. This distinguishes model obedience from prompt propagation without weakening either assertion.
+
+The current synthetic and initialize-recording fixture scope is complete. Optional future raw assistant/tool recordings would extend it. Live receipts establish host assertions only when actually run; loading receipts and deterministic conformance fixtures can't replace authenticated results.
