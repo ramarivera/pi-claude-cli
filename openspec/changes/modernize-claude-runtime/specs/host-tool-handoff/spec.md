@@ -47,3 +47,8 @@ Results, denied requests, tool errors and user questions SHALL preserve IDs, str
 
 - **WHEN** a tool result is absent or the same result is delivered twice
 - **THEN** the operation reports a bounded failure or ignores the duplicate without repeating execution
+
+#### Scenario: Tool arguments still streaming
+
+- **WHEN** Claude is generating tool arguments or later blocks in the same assistant message
+- **THEN** the MCP parking deadline does not count that generation time; it begins at the completed assistant-message boundary for each unparked proposal, while normal stream cancellation and watchdog bounds remain active
