@@ -8,7 +8,9 @@ export function managedPiHelperCommand(name, executable, argv, root) {
   const cli = join(root, "tsx/dist/cli.mjs");
   const preflight = join(root, "tsx/dist/preflight.cjs");
   const loader = pathToFileURL(join(root, "tsx/dist/loader.mjs")).href;
-  const node = name === "node-MainThread" && /\/node(?:js)?$/.test(executable);
+  const node =
+    ["node", "node-MainThread"].includes(name) &&
+    /\/node(?:js)?$/.test(executable);
   if (node && argv.length === 3 && argv[1] === cli && argv[2] === broker)
     return "pi-intercom";
   if (
@@ -37,7 +39,7 @@ export function managedPiHelper(
   process,
   root = join(homedir(), ".pi/agent/npm/node_modules"),
 ) {
-  if (!["node-MainThread", "esbuild"].includes(process.name)) return;
+  if (!["node", "node-MainThread", "esbuild"].includes(process.name)) return;
   try {
     const argv = readFileSync(`/proc/${process.pid}/cmdline`, "utf8")
       .split("\0")
@@ -81,10 +83,16 @@ export function nativeHelperCleanup(
       reason = "after-inference-baseline";
     else if (!process || !before) reason = "missing-process-evidence";
     else if (
-      !["node-MainThread", "esbuild"].includes(process.name) ||
+      !["node", "node-MainThread", "esbuild"].includes(process.name) ||
       process.name !== before.name
     )
       reason = "unknown-helper-name";
+    else if (
+      process.name === "node" &&
+      (before.helperOwner !== "pi-intercom" ||
+        process.helperOwner !== before.helperOwner)
+    )
+      reason = "unverified-node-command";
     else if (process.start !== before.start)
       reason = "changed-process-identity";
     else {

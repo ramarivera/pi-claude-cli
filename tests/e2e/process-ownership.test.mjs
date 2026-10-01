@@ -2,9 +2,87 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { managedPiHelper, nativeHelperCleanup } from "./process-ownership.mjs";
+import {
+  managedPiHelper,
+  managedPiHelperCommand,
+  nativeHelperCleanup,
+} from "./process-ownership.mjs";
 import { RpcHost, scratchDirectory } from "./rpc.mjs";
+
+test("both Linux Node process names require the exact intercom command and executable", () => {
+  const root = "/synthetic/node_modules";
+  const cli = join(root, "tsx/dist/cli.mjs");
+  const broker = join(root, "pi-intercom/broker/broker.ts");
+  const preflight = join(root, "tsx/dist/preflight.cjs");
+  const loader = pathToFileURL(join(root, "tsx/dist/loader.mjs")).href;
+  for (const name of ["node", "node-MainThread"]) {
+    for (const argv of [
+      ["node", cli, broker],
+      ["node", "--require", preflight, "--import", loader, broker],
+      ["node", "--require", preflight, "--loader", loader, broker],
+    ])
+      assert.equal(
+        managedPiHelperCommand(name, "/bin/node", argv, root),
+        "pi-intercom",
+      );
+    for (const argv of [
+      ["node", "/other.js", broker, cli],
+      ["node", "--eval", cli, broker],
+      ["node", cli, "/other.ts"],
+      ["node", cli, broker, "--extra"],
+      ["node", "--require", preflight, "--import", "file:///other.mjs", broker],
+    ])
+      assert.equal(
+        managedPiHelperCommand(name, "/bin/node", argv, root),
+        undefined,
+      );
+    assert.equal(
+      managedPiHelperCommand(name, "/bin/claude", ["node", cli, broker], root),
+      undefined,
+    );
+  }
+  assert.equal(
+    managedPiHelperCommand("unknown", "/bin/node", ["node", cli, broker], root),
+    undefined,
+  );
+});
+
+test("Node22 startup helper allowance requires verified command ownership", () => {
+  const host = { pid: 100, name: "pi", parent: 1, start: "host" };
+  const broker = {
+    pid: 101,
+    name: "node",
+    parent: 100,
+    start: "broker",
+    helperOwner: "pi-intercom",
+  };
+  const proof = (initial, current) =>
+    nativeHelperCleanup(
+      { observedProcesses: [host, current], forcedChildren: [101] },
+      new Set([100, 101]),
+      100,
+      [host, initial],
+      true,
+    );
+  assert.equal(proof(broker, broker).allowedHelperCount, 1);
+  for (const change of [
+    { helperOwner: undefined },
+    { helperOwner: "other" },
+    { name: "node-MainThread" },
+    { start: "reused-pid" },
+    { parent: 999 },
+  ])
+    assert.equal(proof(broker, { ...broker, ...change }).rejectedCount, 1);
+  assert.equal(
+    proof(
+      { ...broker, helperOwner: undefined },
+      { ...broker, helperOwner: undefined },
+    ).rejectedChildren[0].reason,
+    "unverified-node-command",
+  );
+});
 
 function fixture() {
   const sandbox = scratchDirectory("ownership-");
@@ -69,7 +147,7 @@ input.on('close', () => process.exit(0));
 }
 
 for (const trusted of [true, false])
-  test(`late ${trusted ? "signed broker" : "unknown Node worker"} cleanup keeps strict ownership and accurate forced counts`, async () => {
+  test(`late ${trusted ? "identified broker" : "unknown Node worker"} cleanup keeps strict ownership and accurate forced counts`, async () => {
     const { host, sandbox, allowance } = fixture();
     let cleanup;
     try {
@@ -80,7 +158,7 @@ for (const trusted of [true, false])
         host.track();
         const identity = host.identities.get(pid);
         return (
-          identity?.name === "node-MainThread" &&
+          ["node", "node-MainThread"].includes(identity?.name) &&
           (!trusted || identity.helperOwner === "pi-intercom")
         );
       }, "live Node helper identity");
