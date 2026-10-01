@@ -15,6 +15,7 @@ import {
   toRequest,
 } from "../../../src/adapters/omp/request.js";
 import { readRuntimeConfiguration } from "../../../entrypoints/config.js";
+import type { PromptMessage } from "../../../src/contracts/index.js";
 
 const configuration = readRuntimeConfiguration({});
 const model = { id: "claude-haiku-4-5", reasoning: false } as Model;
@@ -28,6 +29,73 @@ function request(options: SimpleStreamOptions = {}) {
 }
 
 describe("native OMP request normalization", () => {
+  it("accepts a background completion as a developer prompt without changing its role", () => {
+    const completion: Context = {
+      messages: [
+        { role: "user", content: "start research", timestamp: 0 },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Started." }],
+          timestamp: 1,
+        } as Context["messages"][number],
+        {
+          role: "developer",
+          content: [{ type: "text", text: "NuBreakingResearch completed" }],
+          timestamp: 2,
+        },
+      ],
+    };
+    const normalized = toRequest(
+      model,
+      completion,
+      {},
+      configuration,
+      session,
+      "/project",
+    );
+    expect(normalized.input).toEqual({
+      kind: "prompt",
+      content: [{ type: "text", text: "NuBreakingResearch completed" }],
+      messages: [
+        {
+          role: "developer",
+          content: [{ type: "text", text: "NuBreakingResearch completed" }],
+        },
+      ],
+    });
+    expect(normalized.transcript.at(-1)?.role).toBe("developer");
+  });
+  it("keeps the developer notification before its native image attachment", () => {
+    const notification = {
+      role: "developer" as const,
+      content: [{ type: "text" as const, text: "Background image result" }],
+      timestamp: 1,
+    };
+    const attachment = {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Images attached to async-result." },
+        { type: "image" as const, data: "aW1hZ2U=", mimeType: "image/png" },
+      ],
+      timestamp: 2,
+    };
+    const normalized = toRequest(
+      model,
+      { messages: [notification, attachment] },
+      {},
+      configuration,
+      session,
+      "/project",
+    );
+    expect(normalized.input).toEqual({
+      kind: "prompt",
+      content: [...notification.content, ...attachment.content],
+      messages: [
+        { role: "developer", content: notification.content },
+        { role: "user", content: attachment.content },
+      ],
+    });
+  });
   it("attaches the active channel only to persistent provider calls and preserves it across hooks", () => {
     const liveSteering = { wait: vi.fn(), claim: vi.fn() };
     expect(request({ liveSteering }).activeSteering).toBeUndefined();
@@ -458,6 +526,101 @@ describe("native OMP request normalization", () => {
       content: [{ type: "text", text: "edited" }],
     });
   });
+  it("keeps a developer role when a prompt hook edits background-result content", () => {
+    const original = toRequest(
+      model,
+      {
+        messages: [
+          {
+            role: "developer",
+            content: [{ type: "text", text: "background result" }],
+            timestamp: 0,
+          },
+        ],
+      },
+      {},
+      configuration,
+      session,
+      "/project",
+    );
+    const content = [{ type: "text" as const, text: "edited result" }];
+    const replacement = replacePayload(original, {
+      ...payloadForHook(original),
+      input: { kind: "prompt", content },
+    });
+    expect(replacement.input).toEqual({
+      kind: "prompt",
+      content,
+      messages: [{ role: "developer", content }],
+    });
+    expect(replacement.transcript).toEqual([{ role: "developer", content }]);
+    expect(() =>
+      replacePayload(original, {
+        ...payloadForHook(original),
+        input: {
+          kind: "prompt",
+          content,
+          messages: [{ role: "user", content }],
+        },
+      }),
+    ).toThrow("preserve ordered prompt roles");
+  });
+  it("requires consistent message boundaries for mixed developer and image hook edits", () => {
+    const original = toRequest(
+      model,
+      {
+        messages: [
+          {
+            role: "developer",
+            content: [{ type: "text", text: "background result" }],
+            timestamp: 0,
+          },
+          {
+            role: "user",
+            content: [{ type: "image", data: "YQ==", mimeType: "image/png" }],
+            timestamp: 1,
+          },
+        ],
+      },
+      {},
+      configuration,
+      session,
+      "/project",
+    );
+    expect(replacePayload(original, payloadForHook(original)).input).toEqual(
+      original.input,
+    );
+    const messages: PromptMessage[] = [
+      {
+        role: "developer" as const,
+        content: [{ type: "text" as const, text: "edited" }],
+      },
+      {
+        role: "user" as const,
+        content: [
+          { type: "image" as const, data: "Yg==", mimeType: "image/png" },
+        ],
+      },
+    ];
+    const content = messages.flatMap((message) => message.content);
+    const replacement = replacePayload(original, {
+      ...payloadForHook(original),
+      input: { kind: "prompt", content, messages },
+    });
+    expect(replacement.transcript).toEqual(messages);
+    expect(() =>
+      replacePayload(original, {
+        ...payloadForHook(original),
+        input: { kind: "prompt", content },
+      }),
+    ).toThrow("preserve ordered prompt roles");
+    expect(() =>
+      replacePayload(original, {
+        ...payloadForHook(original),
+        input: { kind: "prompt", content, messages: [...messages].reverse() },
+      }),
+    ).toThrow("preserve ordered prompt roles");
+  });
   it("maps native output token bounds and rejects invalid bounds", () => {
     expect(request({ maxTokens: 4096 }).settings.maxOutputTokens).toBe(4096);
     expect(() => request({ maxTokens: 0 })).toThrow("positive safe integer");
@@ -506,6 +669,74 @@ describe("native OMP request normalization", () => {
       steering: [{ type: "text", text: "new instruction" }],
     });
   });
+  it.each([false, true])(
+    "keeps a background result and its parked tool result, notification first: %s",
+    (noticeFirst) => {
+      const notice = {
+        role: "developer" as const,
+        content: [
+          { type: "text" as const, text: "Background research finished" },
+        ],
+        timestamp: 1,
+      };
+      const result = {
+        role: "toolResult" as const,
+        toolCallId: "id",
+        toolName: "edit",
+        content: [{ type: "text" as const, text: "real tool output" }],
+        isError: false,
+        timestamp: 2,
+      };
+      const normalized = toRequest(
+        model,
+        {
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                { type: "toolCall", id: "id", name: "edit", arguments: {} },
+              ],
+              timestamp: 0,
+            } as Context["messages"][number],
+            ...(noticeFirst ? [notice, result] : [result, notice]),
+          ],
+        },
+        {},
+        configuration,
+        session,
+        "/project",
+      );
+      expect(normalized.input).toEqual({
+        kind: "tool-results",
+        results: [
+          {
+            toolCallId: "id",
+            toolName: "edit",
+            content: result.content,
+            isError: false,
+          },
+        ],
+        steering: notice.content,
+        steeringMessages: [{ role: "developer", content: notice.content }],
+      });
+      expect(
+        normalized.transcript.slice(1).map((message) => message.role),
+      ).toEqual(
+        noticeFirst
+          ? ["developer", "tool_result"]
+          : ["tool_result", "developer"],
+      );
+      expect(() =>
+        replacePayload(normalized, {
+          ...payloadForHook(normalized),
+          input: {
+            ...normalized.input,
+            steering: [{ type: "text", text: "uncorrelated change" }],
+          },
+        }),
+      ).toThrow("Invalid OMP payload input");
+    },
+  );
   it("accepts real OMP default controls and rejects concrete unsupported overrides", () => {
     const httpFetch = () => {
       throw new Error("Claude subprocess mustn't invoke OMP HTTP fetch");

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
   HostRoundRequest,
+  PromptMessage,
   SessionIdentity,
   TranscriptMessage,
   UserContent,
@@ -52,6 +53,27 @@ export function currentPrompt(
 export function precedingHistory(
   request: HostRoundRequest,
 ): readonly TranscriptMessage[] {
+  const messages =
+    request.input.kind === "prompt"
+      ? request.input.messages
+      : request.input.steeringMessages;
+  if (messages) {
+    currentPromptMessages(request);
+    const boundary =
+      request.transcript.findLastIndex(
+        (message) => message.role === "assistant",
+      ) + 1;
+    const tail = request.transcript.slice(boundary);
+    const prompts = tail.filter(
+      (message): message is PromptMessage =>
+        message.role === "user" || message.role === "developer",
+    );
+    if (digest(prompts) === digest(messages))
+      return request.transcript.slice(0, boundary);
+    throw new Error(
+      "Host input messages must match the current transcript suffix",
+    );
+  }
   const input = currentPrompt(request),
     last = request.transcript.at(-1);
   return input &&
@@ -59,6 +81,28 @@ export function precedingHistory(
     digest(last.content) === digest(input)
     ? request.transcript.slice(0, -1)
     : request.transcript;
+}
+export function currentPromptMessages(
+  request: HostRoundRequest,
+): readonly PromptMessage[] {
+  const content = currentPrompt(request);
+  const messages =
+    request.input.kind === "prompt"
+      ? request.input.messages
+      : request.input.steeringMessages;
+  if (!messages) return content ? [{ role: "user", content }] : [];
+  if (
+    !messages.length ||
+    messages.some(
+      (message) => message.role !== "user" && message.role !== "developer",
+    ) ||
+    digest(messages.flatMap((message) => [...message.content])) !==
+      digest(content)
+  )
+    throw new Error(
+      "Host input messages must match the ordered prompt content",
+    );
+  return messages;
 }
 export function identity(
   request: HostRoundRequest,

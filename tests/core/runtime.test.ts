@@ -15,6 +15,7 @@ import type {
   HostToolCall,
   HostToolResult,
   InteractionResponse,
+  PromptMessage,
   TranscriptMessage,
   UnsequencedClaudeDriverEvent,
   Usage,
@@ -462,6 +463,184 @@ describe("Claude runtime session ownership (offline)", () => {
       expect(driver.sessions[0].closeCount).toBe(0);
       await runtime.closeAll();
       expect(driver.sessions[0].closeCount).toBe(1);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps a developer background wake and its image split resident: %s",
+    async (withImage) => {
+      const driver = new OfflineDriver();
+      driver.setup = (session) => {
+        session.onPrompt = () => {
+          step(session, `reply-${session.prompts.length}`, [
+            { type: "text", text: `reply ${session.prompts.length}` },
+          ]);
+          success(session);
+        };
+      };
+      const runtime = createClaudeRuntime({ driver });
+      try {
+        const first = outcome(
+          await collect(runtime.streamRound(request({ transcript: [user] }))),
+        );
+        const wake: PromptMessage[] = [
+          {
+            role: "developer" as const,
+            content: [{ type: "text" as const, text: "Research completed" }],
+          },
+          ...(withImage
+            ? [
+                {
+                  role: "user" as const,
+                  content: [
+                    {
+                      type: "text" as const,
+                      text: "Images attached to async-result.",
+                    },
+                    {
+                      type: "image" as const,
+                      data: "aW1hZ2U=",
+                      mimeType: "image/png",
+                    },
+                  ],
+                },
+              ]
+            : []),
+        ];
+        const history = [user, assistant(first.content), ...wake];
+        const second = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "background",
+                transcript: history,
+                input: {
+                  kind: "prompt",
+                  content: wake.flatMap((message) => message.content),
+                  messages: wake,
+                },
+              }),
+            ),
+          ),
+        );
+        const followup = {
+          role: "user" as const,
+          content: [
+            { type: "text" as const, text: "What did the research find?" },
+          ],
+        };
+        const third = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "followup",
+                transcript: [...history, assistant(second.content), followup],
+                input: { kind: "prompt", content: followup.content },
+              }),
+            ),
+          ),
+        );
+        expect(third.reason).toBe("stop");
+        expect(driver.opened).toHaveLength(1);
+        expect(
+          driver.sessions[0].prompts.map((prompt) => prompt.content),
+        ).toEqual([
+          user.content,
+          wake.flatMap((message) => message.content),
+          followup.content,
+        ]);
+        expect(driver.sessions[0].closeCount).toBe(0);
+      } finally {
+        await runtime.closeAll();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "preserves a background notification beside a real parked tool result, notification first: %s",
+    async (noticeFirst) => {
+      const driver = new OfflineDriver();
+      const runtime = createClaudeRuntime({ driver });
+      try {
+        const first = collect(
+          runtime.streamRound(request({ transcript: [user] })),
+        );
+        const session = await started(driver);
+        step(session, "tool", [call("read-id")]);
+        session.park(call("read-id"));
+        const one = outcome(await first);
+        const result = toolResult("read-id");
+        const notice = {
+          role: "developer" as const,
+          content: [
+            { type: "text" as const, text: "NuBreakingResearch completed" },
+          ],
+        };
+        const resultMessage: TranscriptMessage = {
+          role: "tool_result",
+          ...result,
+        };
+        const history: TranscriptMessage[] = [
+          user,
+          assistant(one.content, "toolUse"),
+          ...(noticeFirst ? [notice, resultMessage] : [resultMessage, notice]),
+        ];
+        session.onResults = () => {
+          step(session, "after-tools", [
+            { type: "text", text: "Research and read complete" },
+          ]);
+          success(session);
+        };
+        const two = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "result-and-notice",
+                transcript: history,
+                input: {
+                  kind: "tool-results",
+                  results: [result],
+                  steering: notice.content,
+                  steeringMessages: [notice],
+                },
+              }),
+            ),
+          ),
+        );
+        session.onPrompt = () => {
+          step(session, "followup", [{ type: "text", text: "Remembered" }]);
+          success(session);
+        };
+        const next = {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "Remember it" }],
+        };
+        const three = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "followup",
+                transcript: [...history, assistant(two.content), next],
+                input: { kind: "prompt", content: next.content },
+              }),
+            ),
+          ),
+        );
+        expect(three.reason).toBe("stop");
+        expect(driver.opened).toHaveLength(1);
+        expect(session.results).toEqual([result]);
+        expect(session.prompts.map((prompt) => prompt.content)).toEqual([
+          user.content,
+          notice.content,
+          next.content,
+        ]);
+        expect(session.prompts[1]).toMatchObject({
+          priority: "next",
+          steering: "tool-boundary",
+        });
+      } finally {
+        await runtime.closeAll();
+      }
     },
   );
 

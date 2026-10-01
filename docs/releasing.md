@@ -42,6 +42,10 @@ with-env { PI_CLAUDE_INSTALLED_E2E: "1", PI_CLAUDE_DRIVER: "sdk" } { node --test
 
 These tests discover the provider through the real managed configuration and installed package. Pi uses `PI_OFFLINE=1` for package resolution so the smoke doesn't install or update unrelated home packages; Claude inference stays online. Scratch sessions and instrumentation keep test data separate from interactive sessions.
 
+Both OMP smoke cases also run one real native background bash job. An owned controller releases it only after the foreground assistant answer, so its native async-result notification wakes a new provider round with developer input. The checks require exactly one notification, the completion answer, a remembered follow-up and the same resident Claude query. Native status-call observation covers both steering and runtime progress keys because RPC itself suppresses the footer. Routine metadata must never create footer rows; file logging and genuine errors have a separate compiled OMP footer/logger regression.
+
+Before publishing, select `PI_CLAUDE_SOURCE_SMOKE_E2E=1` to run the same behavioral checks against source entrypoints and isolated configuration, with distinct source provenance. `PI_CLAUDE_SMOKE_HOST=omp` selects only OMP; omit it to include Pi. Source checks don't establish installed delivery.
+
 For the steering release, verify the same four host/driver combinations with a native tool held open and a queued correction:
 
 ```nu

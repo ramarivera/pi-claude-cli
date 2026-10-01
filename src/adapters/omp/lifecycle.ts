@@ -341,13 +341,30 @@ export class OmpLifecycle {
     )
       return;
     const attribution = Object.entries(event.attribution)
-      .filter(([, value]) => value !== undefined && value !== null)
-      .map(([key, value]) => `${key}=${bounded(String(value))}`)
-      .join(" ");
-    state.context.ui.setStatus(
-      "pi-claude-cli-progress",
-      `Claude ${event.family}: ${bounded(event.subtype)}${attribution ? ` [${attribution}]` : ""}`,
-    );
+      .filter(([key]) =>
+        [
+          "claudeSessionId",
+          "turnId",
+          "messageId",
+          "parentToolUseId",
+          "toolUseId",
+          "taskId",
+          "agentId",
+        ].includes(key),
+      )
+      .flatMap(([key, value]) => {
+        const id = diagnosticId(value);
+        return id ? [[key, id] as const] : [];
+      });
+    // setStatus adds a plain extension row beneath OMP's prompt bar. Routine
+    // runtime metadata belongs in its file logger, not in the interactive footer.
+    api.logger.debug(`Claude ${event.family}: ${bounded(event.subtype)}`, {
+      owner: "claude",
+      hostSessionId: diagnosticId(state.identity.sessionId),
+      hostAgentId: diagnosticId(state.context.agent.id),
+      sequence: event.sequence,
+      attribution: Object.fromEntries(attribution),
+    });
     api.events.emit("pi-claude-cli:observation", {
       owner: "claude",
       hostSession: { ...state.identity },

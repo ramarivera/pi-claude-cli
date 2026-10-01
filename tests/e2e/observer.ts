@@ -463,12 +463,15 @@ export function observeSteeringStatus(
   if (observedUis.has(ui)) return;
   const original = ui.setStatus;
   ui.setStatus = function (key, text) {
-    if (key === "pi-claude-cli-steering")
-      record("steering-status", {
-        key,
-        hasText: typeof text === "string",
-        length: typeof text === "string" ? text.length : 0,
-      });
+    if (key === "pi-claude-cli-steering" || key === "pi-claude-cli-progress")
+      record(
+        key === "pi-claude-cli-steering" ? "steering-status" : "runtime-status",
+        {
+          key,
+          hasText: typeof text === "string",
+          length: typeof text === "string" ? text.length : 0,
+        },
+      );
     original.call(this, key, text);
   };
   observedUis.add(ui);

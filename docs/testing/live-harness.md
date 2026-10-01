@@ -119,6 +119,8 @@ marker, queues an RPC steer while that tool runs, and releases its original
 result. Assertions preserve the original nonce/result exactly once, the
 supplemental instruction, session/model identity and natural transport cleanup.
 OMP's real `ctx.ui.setStatus` is observed to catch the unsolicited-warning bug.
+The observer watches both the steering and runtime progress keys, including
+routine status/turn events that OMP would otherwise render beneath its bar.
 Receipts retain only bounded IDs, counts and marker-presence booleans, including
 failed semantic checks; no prompt or assistant text is persisted by this suite.
 This exercises host tool-boundary steering, not immediate during-token input
@@ -158,3 +160,16 @@ provider channel and retains boundary delivery. Native OMP 18.4.4 defers images
 before this channel; image/content normalization and ownership have offline
 coverage. These new source tests don't establish installation or publication
 of a new release. Exact results are in the [execution record](../../openspec/changes/add-active-claude-steering/execution.md).
+
+## Native background completion and footer reporting
+
+The installed-package smoke in [the release sequence](../releasing.md) additionally
+drives a native OMP background bash job through completion with each driver.
+The controller holds the job until the foreground answer ends, then verifies
+one real async-result notification, an answer to it, resident history on the
+following prompt and zero Claude footer status rows. This exercises the native
+background delivery path with real inference; it doesn't run a research subagent.
+The native task notification converter and image/order cases have deterministic
+coverage. A compiled OMP subprocess renders the actual footer and writes actual
+file logs for synthetic observations, including the reported `thinking_tokens`
+event, while preserving error notifications.

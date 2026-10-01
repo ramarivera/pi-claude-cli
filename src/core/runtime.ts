@@ -24,6 +24,7 @@ import { Channel } from "./channel.js";
 import { randomUUID } from "node:crypto";
 import {
   currentPrompt,
+  currentPromptMessages,
   digest,
   identity,
   messageDigest,
@@ -1633,7 +1634,11 @@ export function createClaudeRuntime(
                 text: "Continue the conversation using the supplied host tool results.",
               },
             ];
-            session.expected.push({ role: "user", content: input });
+            session.expected.push(
+              ...(currentPrompt(request)
+                ? currentPromptMessages(request)
+                : [{ role: "user" as const, content: input }]),
+            );
             await Promise.race([
               session.driver.submitPrompt({
                 turnId: session.turnId,
@@ -1680,10 +1685,23 @@ export function createClaudeRuntime(
               !round.done &&
               !acquired.continuation
             ) {
-              session.expected.push({
-                role: "user",
-                content: request.input.steering,
-              });
+              if (request.input.steeringMessages) {
+                // Results and notifications can interleave in native history.
+                // Their whole pending suffix is acknowledged by the next round.
+                const resultIds = new Set(
+                  request.input.results.map((result) => result.toolCallId),
+                );
+                session.expected = session.expected.filter(
+                  (message) =>
+                    message.role !== "tool_result" ||
+                    !resultIds.has(message.toolCallId),
+                );
+                const boundary =
+                  request.transcript.findLastIndex(
+                    (message) => message.role === "assistant",
+                  ) + 1;
+                session.expected.push(...request.transcript.slice(boundary));
+              } else session.expected.push(...currentPromptMessages(request));
               await Promise.race([
                 session.driver.submitPrompt({
                   turnId: session.turnId ?? request.roundId,

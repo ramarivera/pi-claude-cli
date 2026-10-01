@@ -77,7 +77,7 @@ function setup(
   const handlers = new Map<string, Handler>();
   let provider: ProviderConfig | undefined;
   const events = { emit: vi.fn() };
-  const logger = { error: vi.fn() };
+  const logger = { error: vi.fn(), debug: vi.fn() };
   const api = {
     on: (name: string, handler: Handler) => handlers.set(name, handler),
     registerProvider: (_name: string, config: ProviderConfig) => {
@@ -598,7 +598,7 @@ describe("native OMP lifecycle", () => {
     expect(unrelated.close).not.toHaveBeenCalled();
     expect(map.get("other")).toBe(unrelated);
   });
-  it("presents attributed Claude tasks through actual status/event APIs without native task execution", async () => {
+  it("logs attributed Claude tasks and emits native observations without footer text or native task execution", async () => {
     const event = {
       type: "observation" as const,
       family: "task" as const,
@@ -625,13 +625,14 @@ describe("native OMP lifecycle", () => {
     const ctx = context();
     await host.emit("session_start", ctx);
     await host.stream(model, prompt, {}).result();
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
-      "pi-claude-cli-progress",
-      expect.stringContaining("Claude task: task_progress"),
-    );
-    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
-      "pi-claude-cli-progress",
-      expect.stringContaining("parentToolUseId=parent"),
+    expect(
+      vi
+        .mocked(ctx.ui.setStatus)
+        .mock.calls.filter(([, text]) => typeof text === "string"),
+    ).toEqual([]);
+    expect(host.logger.debug).toHaveBeenCalledExactlyOnceWith(
+      "Claude task: task_progress",
+      expect.objectContaining({ attribution: event.attribution }),
     );
     expect(host.events.emit).toHaveBeenCalledWith(
       "pi-claude-cli:observation",
@@ -639,6 +640,66 @@ describe("native OMP lifecycle", () => {
     );
     expect(host.requests[0].tools).toEqual([]);
   });
+  it.each([
+    ["status", "status"],
+    ["status", "thinking_tokens"],
+    ["status", "session_state_changed"],
+    ["task", "task_progress"],
+    ["tool-progress", "tool_progress"],
+    ["retry", "api_retry"],
+    ["rate-limit", "rate_limit_event"],
+    ["compaction", "compact_boundary"],
+  ] as const)(
+    "keeps routine Claude %s/%s out of the prompt footer and native notifications",
+    async (family, subtype) => {
+      const event = {
+        type: "observation" as const,
+        family,
+        subtype,
+        sequence: 3,
+        attribution: { claudeSessionId: "claude", turnId: "turn" },
+        data: { text: "private-response-never-log", token: "never-log" },
+      };
+      const host = setup(async function* (request) {
+        yield { type: "driver_event", roundId: request.roundId, event };
+        yield {
+          type: "round_end",
+          roundId: request.roundId,
+          reason: "stop",
+          content: [{ type: "text", text: "done" }],
+          pendingToolCallIds: [],
+        };
+      });
+      const ctx = context();
+      await host.emit("session_start", ctx);
+      await host.stream(model, prompt, {}).result();
+      expect(
+        vi
+          .mocked(ctx.ui.setStatus)
+          .mock.calls.filter(([, text]) => typeof text === "string"),
+      ).toEqual([]);
+      expect(ctx.ui.notify).not.toHaveBeenCalled();
+      expect(host.logger.error).not.toHaveBeenCalled();
+      expect(host.logger.debug).toHaveBeenCalledExactlyOnceWith(
+        `Claude ${family}: ${subtype}`,
+        {
+          owner: "claude",
+          hostSessionId: "host",
+          hostAgentId: "Main",
+          sequence: 3,
+          attribution: { claudeSessionId: "claude", turnId: "turn" },
+        },
+      );
+      expect(JSON.stringify(host.logger.debug.mock.calls)).not.toContain(
+        "never-log",
+      );
+      expect(host.events.emit).toHaveBeenCalledWith(
+        "pi-claude-cli:observation",
+        expect.objectContaining({ event }),
+      );
+      await host.emit("session_shutdown", ctx);
+    },
+  );
   it("publishes diagnostics only on the safe bus with whitelisted host identity and no UI", () => {
     const host = setup();
     const ctx = context();

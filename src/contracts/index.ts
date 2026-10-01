@@ -84,8 +84,13 @@ export interface ToolDefinition {
   _meta?: JsonObject;
 }
 
+export interface PromptMessage {
+  role: "user" | "developer";
+  content: readonly UserContent[];
+}
+
 export type TranscriptMessage =
-  | { role: "user" | "developer"; content: readonly UserContent[] }
+  | PromptMessage
   | {
       role: "assistant";
       content: readonly AssistantContent[];
@@ -175,11 +180,18 @@ export interface HostRoundRequest {
   tools: readonly ToolDefinition[];
   transcript: readonly TranscriptMessage[];
   input:
-    | { kind: "prompt"; content: readonly UserContent[] }
+    | {
+        kind: "prompt";
+        content: readonly UserContent[];
+        /** Ordered host input roles; content is their flattened wire payload. */
+        messages?: readonly PromptMessage[];
+      }
     | {
         kind: "tool-results";
         results: readonly HostToolResult[];
         steering?: readonly UserContent[];
+        /** Notifications and user steering retain their host history roles. */
+        steeringMessages?: readonly PromptMessage[];
       };
   settings: RuntimeSettings;
   auth: AuthConfig;

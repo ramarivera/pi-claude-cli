@@ -14,6 +14,7 @@ import type {
   HostToolResult,
   JsonObject,
   JsonValue,
+  PromptMessage,
   ToolDefinition,
   TranscriptMessage,
   UserContent,
@@ -263,20 +264,28 @@ export function toRequest(
   const results: HostToolResult[] = tail
     .filter((message) => message.role === "tool_result")
     .map(({ role: _role, ...result }) => result);
-  const steering = tail.flatMap((message) =>
-    message.role === "user" ? [...message.content] : [],
+  const messages = tail.filter(
+    (message): message is PromptMessage =>
+      message.role === "user" || message.role === "developer",
   );
+  const hasNotifications = messages.some(
+    (message) => message.role === "developer",
+  );
+  const steering = messages.flatMap((message) => [...message.content]);
   if (results.length)
     input = {
       kind: "tool-results",
       results,
       ...(steering.length ? { steering } : {}),
+      ...(hasNotifications ? { steeringMessages: messages } : {}),
     };
-  else if (last?.role === "user")
-    input = { kind: "prompt", content: last.content };
+  else if (last?.role === "user" || last?.role === "developer")
+    input = hasNotifications
+      ? { kind: "prompt", content: steering, messages }
+      : { kind: "prompt", content: last.content };
   else
     throw new Error(
-      "OMP round requires a trailing user message or tool results",
+      "OMP round requires trailing user/developer input or tool results",
     );
   const requestedEffort = options.reasoning ?? configuration.settings.effort;
   if (!model.reasoning && requestedEffort !== undefined)
@@ -339,6 +348,18 @@ function userContent(value: unknown): value is UserContent[] {
             typeof block.data === "string" &&
             typeof block.mimeType === "string";
     })
+  );
+}
+function promptMessages(value: unknown): value is PromptMessage[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (message: unknown) =>
+        record(message) &&
+        (message.role === "user" || message.role === "developer") &&
+        userContent(message.content),
+    )
   );
 }
 function record(value: unknown): value is Record<string, unknown> {
@@ -445,21 +466,50 @@ export function replacePayload(
         JSON.stringify(json(original.input, "input")))
   )
     throw new Error("Invalid OMP payload input");
+  let input = data.input as unknown as HostRoundRequest["input"];
+  let transcript = original.transcript;
+  if (original.input.kind === "prompt" && input.kind === "prompt") {
+    if (original.input.messages) {
+      const prior = original.input.messages;
+      let messages = input.messages;
+      // A single notification can use the same simple content hook as a user
+      // prompt; a mixed batch needs explicit block boundaries from the hook.
+      if (
+        prior.length === 1 &&
+        (!messages || JSON.stringify(messages) === JSON.stringify(prior))
+      )
+        messages = [{ role: prior[0].role, content: input.content }];
+      if (
+        !promptMessages(messages) ||
+        messages.length !== prior.length ||
+        messages.some((message, index) => message.role !== prior[index].role) ||
+        JSON.stringify(messages.flatMap((message) => [...message.content])) !==
+          JSON.stringify(input.content)
+      )
+        throw new Error(
+          "OMP onPayload must preserve ordered prompt roles and match message content",
+        );
+      input = { ...input, messages };
+      transcript = [
+        ...original.transcript.slice(0, -prior.length),
+        ...messages,
+      ];
+    } else {
+      if (input.messages !== undefined)
+        throw new Error("OMP onPayload can't introduce prompt message roles");
+      transcript = [
+        ...original.transcript.slice(0, -1),
+        { role: "user", content: input.content },
+      ];
+    }
+  }
   return {
     ...original,
     cwd: data.cwd,
     model: data.model,
     systemPrompt: data.systemPrompt,
     tools: data.tools as unknown as ToolDefinition[],
-    transcript:
-      original.input.kind === "prompt" &&
-      record(data.input) &&
-      userContent(data.input.content)
-        ? [
-            ...original.transcript.slice(0, -1),
-            { role: "user", content: data.input.content },
-          ]
-        : original.transcript,
-    input: data.input as unknown as HostRoundRequest["input"],
+    transcript,
+    input,
   };
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -27,6 +27,7 @@ import {
   hostEnvironment,
   managedPiStartupOutput,
   preflight,
+  productionFingerprint,
   receiptDirectory,
   scratchDirectory,
 } from "./rpc.mjs";
@@ -118,29 +119,6 @@ function observations(path) {
     : [];
 }
 
-function productionFingerprint() {
-  const hash = createHash("sha256");
-  function visit(relative) {
-    const path = join(ROOT, relative);
-    for (const entry of readdirSync(path, { withFileTypes: true }).sort(
-      (a, b) => a.name.localeCompare(b.name),
-    )) {
-      const name = join(relative, entry.name);
-      if (entry.isDirectory()) visit(name);
-      else if (entry.isFile() && entry.name.endsWith(".ts"))
-        hash
-          .update(name)
-          .update("\0")
-          .update(readFileSync(join(ROOT, name)))
-          .update("\0");
-    }
-  }
-  visit("src");
-  visit("entrypoints");
-  hash.update("index.ts\0").update(readFileSync(join(ROOT, "index.ts")));
-  return hash.digest("hex");
-}
-
 function assertNoSteeringWarning(events, hostKind) {
   if (hostKind !== "omp") return;
   assert.ok(
@@ -149,10 +127,12 @@ function assertNoSteeringWarning(events, hostKind) {
   );
   assert.equal(
     events.filter(
-      (event) => event.type === "steering-status" && event.data.hasText,
+      (event) =>
+        ["steering-status", "runtime-status"].includes(event.type) &&
+        event.data.hasText,
     ).length,
     0,
-    "OMP emitted pi-claude-cli-steering status text without unsupported live input",
+    "OMP emitted Claude steering or runtime status text beneath the prompt bar",
   );
 }
 
@@ -819,7 +799,7 @@ test("boundary fixture abort rejects without returning or leaking a polling time
   }
 });
 
-test("native status observer captures only steering metadata and delegates once", async () => {
+test("native status observer captures only steering/runtime metadata and delegates once", async () => {
   const { observeSteeringStatus } = await import("./observer.ts");
   const sandbox = scratchDirectory("g-");
   const path = join(sandbox, "observations.jsonl");
@@ -839,7 +819,12 @@ test("native status observer captures only steering metadata and delegates once"
         ui.setStatus("unrelated", "never-record");
         ui.setStatus("pi-claude-cli-steering", "never-record");
         ui.setStatus("pi-claude-cli-steering", undefined);
-        assert.equal(forwarded.length, 3);
+        ui.setStatus(
+          "pi-claude-cli-progress",
+          "Claude status: thinking_tokens [turnId=never-record]",
+        );
+        ui.setStatus("pi-claude-cli-progress", undefined);
+        assert.equal(forwarded.length, 5);
         assert.deepEqual(observations(path), [
           {
             type: "steering-status-observer",
@@ -853,12 +838,28 @@ test("native status observer captures only steering metadata and delegates once"
             type: "steering-status",
             data: { key: "pi-claude-cli-steering", hasText: false, length: 0 },
           },
+          {
+            type: "runtime-status",
+            data: { key: "pi-claude-cli-progress", hasText: true, length: 52 },
+          },
+          {
+            type: "runtime-status",
+            data: { key: "pi-claude-cli-progress", hasText: false, length: 0 },
+          },
         ]);
         assert.equal(
           readFileSync(path, "utf8").includes("never-record"),
           false,
         );
         assert.throws(() => assertNoSteeringWarning(observations(path), "omp"));
+        assert.throws(() =>
+          assertNoSteeringWarning(
+            observations(path).filter(
+              (event) => event.type !== "steering-status",
+            ),
+            "omp",
+          ),
+        );
       },
     );
   } finally {
@@ -2317,6 +2318,7 @@ for (const name of CASES) {
             "gate-timeout",
             "steering-status-observer",
             "steering-status",
+            "runtime-status",
           ].includes(event.type),
         );
         let receiptPath;
@@ -2572,6 +2574,7 @@ for (const name of ["omp+cli", "omp+sdk"]) {
             "native-diagnostic",
             "steering-input",
             "steering-status",
+            "runtime-status",
           ].includes(event.type),
         );
         const receiptPath = join(

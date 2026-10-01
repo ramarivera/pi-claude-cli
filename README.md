@@ -94,7 +94,7 @@ flowchart LR
   SDK --> Claude
 ```
 
-The core and drivers import neither host. OMP session state, progress presentation and native formats stay in the OMP adapter; the Pi entrypoint doesn't initialize OMP. OMP exposes attributed progress on `pi-claude-cli:observation` and bounded message/tool correlation diagnostics on `pi-claude-cli:diagnostic`; the diagnostic bus excludes text, tool arguments, schemas and credentials.
+The core and drivers import neither host. OMP session state, progress presentation and native formats stay in the OMP adapter; the Pi entrypoint doesn't initialize OMP. OMP exposes attributed progress on `pi-claude-cli:observation` and bounded message/tool correlation diagnostics on `pi-claude-cli:diagnostic`; the diagnostic bus excludes text, tool arguments, schemas and credentials. Routine runtime metadata goes to OMP's native file logger rather than status rows below its prompt bar; genuine errors retain native reporting.
 
 ## License
 

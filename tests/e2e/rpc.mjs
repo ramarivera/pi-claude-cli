@@ -21,6 +21,28 @@ export const CASES = ["pi+cli", "pi+sdk", "omp+cli", "omp+sdk"];
 export const ROOT = realpathSync(new URL("../..", import.meta.url));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export function productionFingerprint(packageRoot = ROOT) {
+  const hash = createHash("sha256");
+  function visit(relative) {
+    for (const entry of readdirSync(join(packageRoot, relative), {
+      withFileTypes: true,
+    }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const name = join(relative, entry.name);
+      if (entry.isDirectory()) visit(name);
+      else if (entry.isFile() && entry.name.endsWith(".ts"))
+        hash
+          .update(name)
+          .update("\0")
+          .update(readFileSync(join(packageRoot, name)))
+          .update("\0");
+    }
+  }
+  visit("src");
+  visit("entrypoints");
+  hash.update("index.ts\0").update(readFileSync(join(packageRoot, "index.ts")));
+  return hash.digest("hex");
+}
+
 // Deployed pi-powerline-footer emits these keybinding diagnostics via
 // console.debug during extension loading and session_start (index.ts:804,809).
 // Only the managed-install smoke opts in; unknown stdout remains fatal.
