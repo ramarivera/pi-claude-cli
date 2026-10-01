@@ -27,7 +27,7 @@ The earlier 0.4.3 matrix passed both Pi cases but failed OMP's test attribution:
 
 An additional installed Opus 5.5 OMP/CLI case passed the same greeting, queue, answer, tool/session and cleanup assertions (`installed-boundary-omp-cli-1790814054861.json`), including two independently attributed other-provider callbacks. Its diagnostic command exposed a separate offline guard-order regression, which was fixed; the final offline Node gate passed 46 checks with only the four paid cases skipped. An earlier Opus greeting probe failed with an unclassified native error (`installed-boundary-omp-cli-1790813750901.json`). Its exact historical error text wasn't retained, so `pcc-c2r` remains open; the later passing case doesn't establish that first failure's cause. `PI_CLAUDE_BOUNDARY_KEEP_FAILED=1` now retains private failed-session evidence after owned process cleanup, only with the explicit authenticated E2E opt-in.
 
-The full Toolbox Nushell suite still has 15 unrelated investigated failures (`toolbox-5og`); the exact pin tests and Remnic prompt-adapter tests passed. The 0.4.2 historical nested dependency inventory gap (`pcc-bgy`) remains unverified. Neither limit is counted as a successful check.
+An earlier full Toolbox Nushell run recorded 15 unrelated investigated failures (`toolbox-5og`); it wasn’t repeated after concurrent computer-use changes. The exact pin tests and Remnic prompt-adapter tests passed. The 0.4.2 historical nested dependency inventory gap (`pcc-bgy`) remains unverified. Neither limit is counted as a successful check.
 
 ## 0.4.2: warning and boundary steering
 
