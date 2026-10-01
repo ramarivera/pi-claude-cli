@@ -27,8 +27,8 @@ export default function register(api: ExtensionAPI): void {
   api.on("before_provider_request", (event, ctx) =>
     providerPrompt(event.payload, ctx.sessionManager.getSessionId()),
   );
-  api.on("after_provider_response", (event) =>
-    response(event.status, event.headers),
+  api.on("after_provider_response", (event, ctx) =>
+    response(event.status, event.headers, ctx.model?.provider),
   );
   api.on("tool_execution_start", (event) => record("tool-start", event));
   api.on("tool_execution_end", (event) => record("tool-end", event));

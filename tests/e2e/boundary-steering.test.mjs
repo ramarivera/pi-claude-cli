@@ -35,11 +35,16 @@ import {
 const enabled = process.env.PI_CLAUDE_BOUNDARY_E2E === "1";
 const selected = process.env.PI_CLAUDE_BOUNDARY_CASE;
 const installed = process.env.PI_CLAUDE_BOUNDARY_INSTALLED === "1";
+const keepFailed = process.env.PI_CLAUDE_BOUNDARY_KEEP_FAILED === "1";
 const boundaryModel =
   process.env.PI_CLAUDE_BOUNDARY_MODEL ?? "claude-sonnet-5-5";
 assert.ok(
   !installed || enabled,
   "PI_CLAUDE_BOUNDARY_INSTALLED=1 requires PI_CLAUDE_BOUNDARY_E2E=1",
+);
+assert.ok(
+  !keepFailed || enabled,
+  "PI_CLAUDE_BOUNDARY_KEEP_FAILED requires authenticated E2E opt-in",
 );
 if (enabled && selected)
   assert.ok(
@@ -488,6 +493,10 @@ function responseIds(events, driver) {
     "Actual provider response observation missing",
   );
   return responses.map(({ data }) => {
+    assert.ok(
+      data.providerScope === undefined || data.providerScope === "bridge",
+      "Provider response has unknown provider attribution",
+    );
     assert.ok(
       data.callScope === undefined || data.callScope === "session",
       "Provider response has unknown ownership",
@@ -1281,6 +1290,71 @@ test("system prompt proof ignores auxiliary provider calls but rejects every mis
     () => assertSystemPrompt([prompt("before_agent_start"), ...auxiliary]),
     /wasn't observed/,
   );
+});
+
+test("native response observation excludes other providers and keeps bridge identity strict", async () => {
+  const { response } = await import("./observer.ts");
+  const sandbox = scratchDirectory("g-");
+  const path = join(sandbox, "observations.jsonl");
+  try {
+    await withEnvironment(
+      { PCC_E2E_BOUNDARY: "1", PCC_E2E_OBSERVATIONS: path },
+      async () => {
+        const headers = {
+          "x-pi-claude-driver": "cli",
+          "x-pi-claude-session-id": "main",
+          "x-pi-claude-call-scope": "session",
+          private: "never-record",
+        };
+        response(
+          200,
+          { ...headers, "x-pi-claude-driver": "sdk" },
+          "some-other-provider",
+        );
+        assert.deepEqual(observations(path), [
+          {
+            type: "other-provider-response",
+            data: { status: 200, providerScope: "other" },
+          },
+        ]);
+        assert.throws(
+          () => responseIds(observations(path), "cli"),
+          /observation missing/,
+        );
+        response(0, headers, "pi-claude-cli");
+        response(
+          0,
+          {
+            ...headers,
+            "x-pi-claude-call-scope": "auxiliary",
+            "x-pi-claude-session-id": "aux",
+          },
+          "pi-claude-cli",
+        );
+        assert.deepEqual(responseIds(observations(path), "cli"), ["main"]);
+        response(0, {}, "pi-claude-cli");
+        assert.throws(
+          () => responseIds(observations(path), "cli"),
+          /selected driver/,
+        );
+        response(0, headers);
+        assert.throws(
+          () => responseIds(observations(path).slice(-1), "cli"),
+          /unknown provider attribution/,
+        );
+        assert.equal(
+          readFileSync(path, "utf8").includes("never-record"),
+          false,
+        );
+        assert.equal(
+          readFileSync(path, "utf8").includes("some-other-provider"),
+          false,
+        );
+      },
+    );
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 });
 
 test("assistant error evidence classifies all history errors without raw text or provider credentials", () => {
@@ -2151,6 +2225,7 @@ for (const name of CASES) {
         receipt.observations = observations(path).filter((event) =>
           [
             "response",
+            "other-provider-response",
             "system-prompt",
             "steering-input",
             "steering-admission",
@@ -2173,7 +2248,11 @@ for (const name of CASES) {
             mode: 0o600,
           });
         } finally {
-          rmSync(sandbox, { recursive: true, force: true });
+          if (failure && keepFailed)
+            console.log(
+              `Private failed-session diagnostics retained at ${sandbox}`,
+            );
+          else rmSync(sandbox, { recursive: true, force: true });
         }
         console.log(
           `${name} boundary ${receipt.status}; sanitized receipt: ${receiptPath}`,

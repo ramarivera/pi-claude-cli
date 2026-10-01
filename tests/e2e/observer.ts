@@ -21,8 +21,16 @@ export function record(type: string, data: unknown): void {
 export function response(
   status: number,
   headers: Record<string, string>,
+  provider?: string,
 ): void {
+  const providerScope =
+    provider === "pi-claude-cli" ? "bridge" : provider ? "other" : "unknown";
+  if (providerScope === "other") {
+    record("other-provider-response", { status, providerScope });
+    return;
+  }
   record("response", {
+    providerScope,
     status,
     driver: headers["x-pi-claude-driver"],
     claudeSessionId: headers["x-pi-claude-session-id"],

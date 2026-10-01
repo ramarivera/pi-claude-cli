@@ -4,7 +4,30 @@
 
 The source gate passed 562 tests, unchanged coverage thresholds, all three typechecks, lint, formatting, the plan validator and 45 offline Node harness checks. All four authenticated Sonnet 5.5 source boundary cases passed for Pi/OMP with CLI/SDK. Plain greetings emitted no steering warning; queued input was admitted and consumed with matching native UUID receipts before the original tool result continued. Both answer markers, native session identity and natural transport cleanup passed. Ownership-free extension completions now use disposable independent sessions, with regressions covering a parked main query alongside successful and aborted auxiliary calls.
 
-Publication and installed-package validation are pending. This section will record their actual results after registry verification and targeted managed deployment. The installed harness keeps managed companion extensions enabled and disables configured external OMP MCP servers only in its owned test session.
+Release commit/tag: `1e14da9cc329c1c9fef12d4b6fa01360794aaa2a`. [CI 36793856758](https://github.com/ramarivera/pi-claude-cli/actions/runs/36793856758), [trusted publish 36794096294](https://github.com/ramarivera/pi-claude-cli/actions/runs/36794096294) and the [GitHub release](https://github.com/ramarivera/pi-claude-cli/releases/tag/v0.4.3) succeeded. Registry `latest`, tarball SHA-512 and SLSA source commit/workflow matched the release artifact. Initial version reads hit a cached 404; a fresh read verified publication without another publish attempt.
+
+```text
+sha512-LzuAG7Fp1XsHMCHu2oCsePJyVjNqF4daoO1bSAov0AKQB524A1cdiMRWGAS8HcKuLh4N7Sv3sn+cIYNb4n6TOQ==
+```
+
+Toolbox exact pins were pushed as `2a0909c6d78ff8f6478a245621a9108fe7f011a0` and targeted-applied. Both actual installed packages and canonical manifests/locks are 0.4.3; OMP's controller keeps the plugin enabled. Complete package roots were backed up before materialization. Only the verified extension tarball was installed, with identical production and peer dependencies. Post-install hashing proved all 56,181 other Pi dependency files, 36,089 other OMP dependency files and 701 retained OMP extension dependency files unchanged. The earlier 0.4.2 historical inventory gap remains separate.
+
+The final authenticated installed matrix passed all four Sonnet 5.5 cases (21 checks including 17 offline harness regressions), with no skipped cases:
+
+| Host | Driver | Result | Local receipt basename                          |
+| ---- | ------ | ------ | ----------------------------------------------- |
+| Pi   | CLI    | Passed | `installed-boundary-pi-cli-1790813623401.json`  |
+| Pi   | SDK    | Passed | `installed-boundary-pi-sdk-1790813662066.json`  |
+| OMP  | CLI    | Passed | `installed-boundary-omp-cli-1790813680985.json` |
+| OMP  | SDK    | Passed | `installed-boundary-omp-sdk-1790813697584.json` |
+
+Each receipt was independently inspected: installed version/pin 0.4.3, greeting without the warning, preserved system prompt, exact queued/started UUID ordering, one gate/result, both answer markers, one unchanged authoritative Claude session, no history errors, no private transport files, and no forced child/host cleanup or survivors. Pi's owned retry/compaction settings were restored. The harness retained managed companion extensions; OMP's five external MCP servers were disabled only in each owned test session.
+
+The earlier 0.4.3 matrix passed both Pi cases but failed OMP's test attribution: foreign-provider status-200 callbacks were included in Claude identity checks. Those receipts remain failed records. The test observer now classifies responses using the actual native context model, with a regression retaining strict rejection of missing bridge metadata, unknown attribution and changed Claude identity. The final matrix used the unchanged published package; this was a harness correction, not another release.
+
+An additional installed Opus 5.5 OMP/CLI case passed the same greeting, queue, answer, tool/session and cleanup assertions (`installed-boundary-omp-cli-1790814054861.json`), including two independently attributed other-provider callbacks. Its diagnostic command exposed a separate offline guard-order regression, which was fixed; the final offline Node gate passed 46 checks with only the four paid cases skipped. An earlier Opus greeting probe failed with an unclassified native error (`installed-boundary-omp-cli-1790813750901.json`). Its exact historical error text wasn't retained, so `pcc-c2r` remains open; the later passing case doesn't establish that first failure's cause. `PI_CLAUDE_BOUNDARY_KEEP_FAILED=1` now retains private failed-session evidence after owned process cleanup, only with the explicit authenticated E2E opt-in.
+
+The full Toolbox Nushell suite still has 15 unrelated investigated failures (`toolbox-5og`); the exact pin tests and Remnic prompt-adapter tests passed. The 0.4.2 historical nested dependency inventory gap (`pcc-bgy`) remains unverified. Neither limit is counted as a successful check.
 
 ## 0.4.2: warning and boundary steering
 
