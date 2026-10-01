@@ -3379,3 +3379,462 @@ describe("Claude runtime session ownership (offline)", () => {
     }
   });
 });
+
+// Active queue tests exercise native admission/consumption timing with a labelled driver double.
+describe("active native queue ownership (offline)", () => {
+  function setup() {
+    const driver = new OfflineDriver();
+    const runtime = createClaudeRuntime({
+      driver: {
+        kind: driver.kind,
+        capabilities: { ...driver.capabilities, steering: "active-queue" },
+        openSession: driver.openSession.bind(driver),
+      },
+    });
+    return { driver, runtime };
+  }
+  function receipts(
+    session: OfflineSession,
+    prompt: DriverPrompt,
+    state: "queued" | "started",
+  ) {
+    session.emit({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "steering-admission",
+      data: { commandId: prompt.commandId!, state },
+      attribution: {},
+    });
+  }
+  function claim(contents = [[{ type: "text" as const, text: "correct" }]]) {
+    return { contents, accept: vi.fn(), reject: vi.fn() };
+  }
+
+  it("keeps multiple accepted inputs ordered across a native result and buffered continuation without resubmission", async () => {
+    const { driver, runtime } = setup();
+    const taken = claim([
+      [{ type: "text", text: "first" }],
+      [{ type: "text", text: "second" }],
+    ]);
+    const first = collect(
+      runtime.streamRound(
+        request({
+          activeSteering: { wait: async () => {}, claim: async () => taken },
+        }),
+      ),
+    );
+    const session = await started(driver);
+    await vi.waitFor(() => expect(session.prompts).toHaveLength(2));
+    const queued = session.prompts[1];
+    expect(queued).toMatchObject({
+      turnId: "r1",
+      priority: "next",
+      steering: "active-queue",
+      content: taken.contents.flat(),
+    });
+    expect(taken.accept).toHaveBeenCalledOnce();
+    step(session, "original", [{ type: "text", text: "original answer" }]);
+    const one = outcome(await first);
+    success(session); // Original native result precedes command consumption.
+    receipts(session, queued, "started");
+    step(session, "corrected", [{ type: "text", text: "corrected answer" }]);
+    success(session);
+    const accepted = taken.contents.map(
+      (content): TranscriptMessage => ({ role: "user", content }),
+    );
+    const history = [user, assistant(one.content), ...accepted];
+    const two = outcome(
+      await collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: history,
+            input: {
+              kind: "prompt",
+              content: accepted[1]
+                .content as readonly import("../../src/contracts/index.js").UserContent[],
+            },
+          }),
+        ),
+      ),
+    );
+    expect(two.content).toEqual([{ type: "text", text: "corrected answer" }]);
+    expect(driver.opened).toHaveLength(1);
+    expect(session.prompts).toHaveLength(2);
+    expect(taken.reject).not.toHaveBeenCalled();
+    session.onPrompt = () => {
+      step(session, "followup", [{ type: "text", text: "still resident" }]);
+      success(session);
+    };
+    await collect(
+      runtime.streamRound(
+        request({
+          roundId: "r3",
+          transcript: [
+            ...history,
+            assistant(two.content),
+            { role: "user", content: [{ type: "text", text: "continue" }] },
+          ],
+          input: {
+            kind: "prompt",
+            content: [{ type: "text", text: "continue" }],
+          },
+        }),
+      ),
+    );
+    expect(driver.opened).toHaveLength(1);
+    expect(session.prompts).toHaveLength(3);
+    await runtime.closeAll();
+  });
+
+  it("waits for admission when the original terminal arrives during the transport write", async () => {
+    const { driver, runtime } = setup();
+    let admitted!: () => void;
+    driver.setup = (session) => {
+      session.submitPrompt = async (prompt) => {
+        session.prompts.push(prompt);
+        if (prompt.steering)
+          await new Promise<void>((resolve) => {
+            admitted = resolve;
+          });
+      };
+    };
+    const taken = claim();
+    const first = collect(
+      runtime.streamRound(
+        request({
+          activeSteering: { wait: async () => {}, claim: async () => taken },
+        }),
+      ),
+    );
+    const session = await started(driver);
+    await vi.waitFor(() => expect(session.prompts).toHaveLength(2));
+    step(session, "original", [{ type: "text", text: "before correction" }]);
+    success(session);
+    expect(taken.accept).not.toHaveBeenCalled();
+    admitted();
+    expect(outcome(await first).content).toEqual([
+      { type: "text", text: "before correction" },
+    ]);
+    expect(taken.accept).toHaveBeenCalledOnce();
+    await runtime.closeAll();
+  });
+
+  it("rejects a late claim once after the host response already ended", async () => {
+    const { driver, runtime } = setup();
+    let resolveClaim!: (value: ReturnType<typeof claim>) => void;
+    const waiting = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof claim>>((resolve) => {
+          resolveClaim = resolve;
+        }),
+    );
+    const first = collect(
+      runtime.streamRound(
+        request({ activeSteering: { wait: async () => {}, claim: waiting } }),
+      ),
+    );
+    const session = await started(driver);
+    await vi.waitFor(() => expect(waiting).toHaveBeenCalledOnce());
+    step(session, "done", [{ type: "text", text: "done" }]);
+    success(session);
+    expect(outcome(await first).reason).toBe("stop");
+    const late = claim();
+    resolveClaim(late);
+    await vi.waitFor(() => expect(late.reject).toHaveBeenCalledOnce());
+    expect(late.accept).not.toHaveBeenCalled();
+    expect(session.prompts).toHaveLength(1);
+    await runtime.closeAll();
+  });
+
+  it("rechecks a spurious empty wake before claiming later input", async () => {
+    const { driver, runtime } = setup();
+    const taken = claim();
+    const take = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(taken);
+    const first = collect(
+      runtime.streamRound(
+        request({ activeSteering: { wait: async () => {}, claim: take } }),
+      ),
+    );
+    const session = await started(driver);
+    await vi.waitFor(() => expect(taken.accept).toHaveBeenCalledOnce());
+    step(session, "done", [{ type: "text", text: "done" }]);
+    expect(outcome(await first).reason).toBe("stop");
+    expect(take).toHaveBeenCalledTimes(2);
+    await runtime.closeAll();
+  });
+
+  it("aborts unknown admission and settles the claimed input on external cancellation", async () => {
+    const { driver, runtime } = setup();
+    driver.setup = (session) => {
+      session.submitPrompt = async (prompt) => {
+        session.prompts.push(prompt);
+        if (prompt.steering) await new Promise<void>(() => {});
+      };
+    };
+    const controller = new AbortController(),
+      taken = claim();
+    const first = collect(
+      runtime.streamRound(
+        request({
+          signal: controller.signal,
+          activeSteering: { wait: async () => {}, claim: async () => taken },
+        }),
+      ),
+    );
+    const session = await started(driver);
+    await vi.waitFor(() => expect(session.prompts).toHaveLength(2));
+    controller.abort();
+    expect(outcome(await first).reason).toBe("aborted");
+    expect(taken.reject).toHaveBeenCalledOnce();
+    expect(taken.accept).not.toHaveBeenCalled();
+    await runtime.closeAll();
+  });
+
+  it("refuses to replay an accepted correction when the next host transcript changes it", async () => {
+    const { driver, runtime } = setup();
+    const taken = claim();
+    const first = collect(
+      runtime.streamRound(
+        request({
+          activeSteering: { wait: async () => {}, claim: async () => taken },
+        }),
+      ),
+    );
+    const session = await started(driver);
+    await vi.waitFor(() => expect(taken.accept).toHaveBeenCalledOnce());
+    step(session, "done", [{ type: "text", text: "done" }]);
+    const one = outcome(await first);
+    const changed = [{ type: "text" as const, text: "different" }];
+    const next = outcome(
+      await collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [
+              user,
+              assistant(one.content),
+              { role: "user", content: changed },
+            ],
+            input: { kind: "prompt", content: changed },
+          }),
+        ),
+      ),
+    );
+    expect(next.error?.code).toBe("history");
+    expect(driver.opened).toHaveLength(1);
+    expect(session.prompts).toHaveLength(2);
+    expect(session.closeCount).toBe(1);
+    await runtime.closeAll();
+  });
+});
+
+it("retains real parked host calls while active admission is pending and forwards results once", async () => {
+  const driver = new OfflineDriver();
+  const runtime = createClaudeRuntime({
+    driver: {
+      kind: driver.kind,
+      capabilities: { ...driver.capabilities, steering: "active-queue" },
+      openSession: driver.openSession.bind(driver),
+    },
+  });
+  let admit!: () => void;
+  driver.setup = (session) => {
+    session.submitPrompt = async (prompt) => {
+      session.prompts.push(prompt);
+      if (prompt.steering)
+        await new Promise<void>((resolve) => {
+          admit = resolve;
+        });
+    };
+  };
+  const accepted = vi.fn(),
+    rejected = vi.fn(),
+    content = [{ type: "text" as const, text: "correct" }];
+  const first = collect(
+    runtime.streamRound(
+      request({
+        activeSteering: {
+          wait: async () => {},
+          claim: async () => ({
+            contents: [content],
+            accept: accepted,
+            reject: rejected,
+          }),
+        },
+      }),
+    ),
+  );
+  const session = await started(driver);
+  await vi.waitFor(() => expect(session.prompts).toHaveLength(2));
+  step(session, "tool", [call("a")]);
+  session.park(call("a"));
+  expect(accepted).not.toHaveBeenCalled();
+  expect(session.results).toHaveLength(0);
+  admit();
+  const one = outcome(await first);
+  expect(one.reason).toBe("toolUse");
+  expect(accepted).toHaveBeenCalledOnce();
+  expect(rejected).not.toHaveBeenCalled();
+  expect(session.closeCount).toBe(0);
+  session.onResults = () => {
+    session.emit({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "steering-admission",
+      data: { commandId: session.prompts[1].commandId!, state: "started" },
+      attribution: {},
+    });
+    step(session, "after", [{ type: "text", text: "corrected" }]);
+    success(session);
+  };
+  const a = toolResult("a");
+  const two = outcome(
+    await collect(
+      runtime.streamRound(
+        request({
+          roundId: "r2",
+          transcript: [
+            user,
+            assistant(one.content, "toolUse"),
+            { role: "tool_result", ...a },
+            { role: "user", content },
+          ],
+          input: { kind: "tool-results", results: [a], steering: content },
+        }),
+      ),
+    ),
+  );
+  expect(two.reason).toBe("stop");
+  expect(session.results).toEqual([a]);
+  expect(session.prompts).toHaveLength(2);
+  expect(driver.opened).toHaveLength(1);
+  await runtime.closeAll();
+});
+
+it("fails explicitly when a buffered active continuation exceeds the event limit", async () => {
+  const driver = new OfflineDriver();
+  const runtime = createClaudeRuntime({
+    driver: {
+      kind: driver.kind,
+      capabilities: { ...driver.capabilities, steering: "active-queue" },
+      openSession: driver.openSession.bind(driver),
+    },
+  });
+  const accepted = vi.fn();
+  const first = collect(
+    runtime.streamRound(
+      request({
+        activeSteering: {
+          wait: async () => {},
+          claim: async () => ({
+            contents: [[{ type: "text", text: "correct" }]],
+            accept: accepted,
+            reject: vi.fn(),
+          }),
+        },
+      }),
+    ),
+  );
+  const session = await started(driver);
+  await vi.waitFor(() => expect(accepted).toHaveBeenCalledOnce());
+  step(session, "original", [{ type: "text", text: "original" }]);
+  await first;
+  session.emit({
+    type: "observation",
+    family: "diagnostic",
+    subtype: "steering-admission",
+    data: { commandId: session.prompts[1].commandId!, state: "started" },
+    attribution: {},
+  });
+  for (let i = 0; i < 260; i++)
+    session.emit({
+      type: "content_delta",
+      messageId: "next",
+      index: 0,
+      delta: { kind: "text", text: "x" },
+      attribution: {},
+    });
+  await vi.waitFor(() => expect(session.closeCount).toBe(1));
+  expect(session.prompts).toHaveLength(2);
+  await runtime.closeAll();
+});
+
+it("rejects unacknowledged active admission on its deadline and invalidates the resident session", async () => {
+  const driver = new OfflineDriver();
+  const runtime = createClaudeRuntime({
+    driver: {
+      kind: driver.kind,
+      capabilities: { ...driver.capabilities, steering: "active-queue" },
+      openSession: driver.openSession.bind(driver),
+    },
+  });
+  driver.setup = (session) => {
+    session.submitPrompt = async (prompt) => {
+      session.prompts.push(prompt);
+      if (prompt.steering) await new Promise<void>(() => {});
+    };
+  };
+  const accept = vi.fn(),
+    reject = vi.fn();
+  const pending = collect(
+    runtime.streamRound(
+      request({
+        settings: {
+          toolResultTimeoutMs: 25,
+          claudeTools: [],
+          userMcpServers: [],
+        },
+        activeSteering: {
+          wait: async () => {},
+          claim: async () => ({
+            contents: [[{ type: "text", text: "correct" }]],
+            accept,
+            reject,
+          }),
+        },
+      }),
+    ),
+  );
+  const terminal = outcome(await pending);
+  expect(terminal.reason).toBe("error");
+  expect(terminal.error?.code).toBe("timeout");
+  expect(accept).not.toHaveBeenCalled();
+  expect(reject).toHaveBeenCalledOnce();
+  expect(driver.sessions[0].closeCount).toBe(1);
+  await runtime.closeAll();
+});
+
+it("rejects an empty claimed batch without submitting a native prompt", async () => {
+  const driver = new OfflineDriver();
+  const runtime = createClaudeRuntime({
+    driver: {
+      kind: driver.kind,
+      capabilities: { ...driver.capabilities, steering: "active-queue" },
+      openSession: driver.openSession.bind(driver),
+    },
+  });
+  const accept = vi.fn(),
+    reject = vi.fn();
+  const pending = collect(
+    runtime.streamRound(
+      request({
+        activeSteering: {
+          wait: async () => {},
+          claim: async () => ({ contents: [], accept, reject }),
+        },
+      }),
+    ),
+  );
+  const session = await started(driver);
+  await vi.waitFor(() => expect(reject).toHaveBeenCalledOnce());
+  step(session, "ordinary", [{ type: "text", text: "ordinary" }]);
+  success(session);
+  expect(outcome(await pending).reason).toBe("stop");
+  expect(accept).not.toHaveBeenCalled();
+  expect(session.prompts).toHaveLength(1);
+  await runtime.closeAll();
+});

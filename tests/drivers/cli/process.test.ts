@@ -3,6 +3,7 @@ import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import type {
   ClaudeDriverEvent,
   ClaudeDriverSession,
@@ -724,5 +725,42 @@ describe("bounded NDJSON framing", () => {
     expect(() =>
       new JsonLines(() => {}, 4).push(Buffer.from("12345\n")),
     ).toThrow("byte limit");
+  });
+});
+
+it("admits active queued input on the retained turn after a native result and preserves its result UUIDs", async () => {
+  const { session, iterator } = await open();
+  await session.submitPrompt({
+    turnId: "retained",
+    content: [{ type: "text", text: "fragment" }],
+  });
+  await until(iterator, (event) => event.type === "turn_end");
+  const commandId = randomUUID();
+  await session.submitPrompt({
+    turnId: "retained",
+    content: [{ type: "text", text: "active-queued-followup" }],
+    priority: "next",
+    steering: "active-queue",
+    commandId,
+  });
+  const admission = await until(
+    iterator,
+    (event) =>
+      event.type === "observation" && event.subtype === "steering-admission",
+  );
+  expect(admission).toMatchObject({
+    data: { commandId, state: "queued" },
+    attribution: { turnId: "retained" },
+  });
+  const consumption = await until(
+    iterator,
+    (event) =>
+      event.type === "observation" && event.subtype === "steering-admission",
+  );
+  expect(consumption).toMatchObject({ data: { commandId, state: "started" } });
+  const terminal = await until(iterator, (event) => event.type === "turn_end");
+  expect(terminal).toMatchObject({
+    commandIds: [commandId, commandId],
+    attribution: { turnId: "retained" },
   });
 });

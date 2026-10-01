@@ -377,7 +377,9 @@ export function projectRound(
                   metadata: {
                     transport: observation.driver === "cli" ? "stdio" : "sdk",
                     driver: observation.driver,
-                    steering: "tool-boundary",
+                    steering: request.activeSteering
+                      ? "active-queue"
+                      : "tool-boundary",
                     restoration: observation.restoration ?? "runtime-managed",
                     cost: "Claude reported USD estimate; not subscription billing",
                   },

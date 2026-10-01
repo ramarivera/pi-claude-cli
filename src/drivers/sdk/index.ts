@@ -54,7 +54,7 @@ export function createSdkDriver(options: SdkDriverOptions = {}): ClaudeDriver {
       persistedResume: true,
       structuredToolResults: true,
       images: true,
-      steering: "tool-boundary",
+      steering: "active-queue",
       interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
       forwardSubagentText: true,
@@ -115,14 +115,15 @@ class SessionIdentityMismatchError extends Error {}
 
 class SdkSession implements ClaudeDriverSession {
   readonly events = new AsyncQueue<ClaudeDriverEvent>();
-  private readonly promptReceipts = new PromptReceipts((commandId, state) =>
+  private readonly promptReceipts = new PromptReceipts((commandId, state) => {
+    if (state === "started") this.active = true;
     this.emit({
       type: "observation",
       family: "diagnostic",
       subtype: "steering-admission",
       data: { commandId, state },
-    }),
-  );
+    });
+  });
   private readonly prompts = new AsyncQueue<QueuedPrompt>();
   private readonly abortController = new AbortController();
   private readonly interactions = new Map<string, PendingInteraction>();
@@ -365,7 +366,7 @@ class SdkSession implements ClaudeDriverSession {
     if (
       prompt.steering &&
       (prompt.priority !== "next" ||
-        !this.active ||
+        (prompt.steering === "tool-boundary" && !this.active) ||
         this.turnId !== prompt.turnId)
     )
       return Promise.reject(
@@ -374,7 +375,10 @@ class SdkSession implements ClaudeDriverSession {
         ),
       );
     const receipt = prompt.steering
-      ? this.promptReceipts.register(this.request.settings.toolResultTimeoutMs)
+      ? this.promptReceipts.register(
+          this.request.settings.toolResultTimeoutMs,
+          prompt.commandId,
+        )
       : undefined;
     const written = new Promise<void>((accept, reject) => {
       try {
@@ -508,8 +512,23 @@ class SdkSession implements ClaudeDriverSession {
     try {
       for await (const message of this.query) {
         if (this.promptReceipts.handle(message)) continue;
-        for (const event of this.normalizer.normalize(message))
+        for (const event of this.normalizer.normalize(message)) {
+          if (
+            event.type === "turn_end" &&
+            typeof message === "object" &&
+            message !== null
+          ) {
+            const packet = message as Record<string, unknown>;
+            const ids = [
+              packet.user_message_uuid,
+              ...(Array.isArray(packet.user_message_uuids)
+                ? packet.user_message_uuids
+                : []),
+            ].filter((id): id is string => typeof id === "string");
+            if (ids.length) event.commandIds = ids;
+          }
           this.normalize(event);
+        }
       }
     } catch (error) {
       reason = this.closed ? "closed" : "error";

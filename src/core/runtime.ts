@@ -21,6 +21,7 @@ import {
   type Usage,
 } from "../contracts/index.js";
 import { Channel } from "./channel.js";
+import { randomUUID } from "node:crypto";
 import {
   currentPrompt,
   digest,
@@ -60,6 +61,17 @@ interface Round {
   finished: Promise<void>;
   settle: () => void;
   abort?: () => void;
+  steeringStop?: AbortController;
+  admissionStop?: AbortController;
+  steeringPump?: Promise<void>;
+  deferredTerminal?: Extract<ClaudeDriverEvent, { type: "turn_end" }>;
+}
+interface QueuedSteering {
+  contents: readonly (readonly import("../contracts/index.js").UserContent[])[];
+  commandId: string;
+  accepted: boolean;
+  started: boolean;
+  timer?: ReturnType<typeof setTimeout>;
 }
 interface Session {
   identity: SessionIdentity;
@@ -82,6 +94,8 @@ interface Session {
   failure?: RuntimeError;
   invalidated?: HistoryInvalidationReason;
   operations: Set<Promise<void>>;
+  queuedSteering?: QueuedSteering;
+  continuation?: QueuedSteering;
 }
 const zero = (): Usage => ({
   inputTokens: 0,
@@ -166,6 +180,32 @@ function contentOf(round: Round): AssistantContent[] {
   for (const call of round.proposals.values())
     if (!ids.has(call.id)) output.push(copy(call));
   return output;
+}
+function untilStopped<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  late?: (value: T) => void,
+): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    let stopped = signal.aborted;
+    const abort = () => {
+      stopped = true;
+      resolve(undefined);
+    };
+    if (stopped) resolve(undefined);
+    else signal.addEventListener("abort", abort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        if (stopped) late?.(value);
+        else resolve(value);
+      },
+      (cause: unknown) => {
+        signal.removeEventListener("abort", abort);
+        if (!stopped) reject(cause);
+      },
+    );
+  });
 }
 function message(round: Round, id: string): Message {
   let existing = round.messages.get(id);
@@ -270,6 +310,7 @@ export function createClaudeRuntime(
         if (proposal) proposal.released = true;
       }
     round.done = true;
+    round.steeringStop?.abort();
     round.settle();
     round.request.signal?.removeEventListener(
       "abort",
@@ -328,7 +369,8 @@ export function createClaudeRuntime(
       stopReason: reason,
       ...(runtimeError ? { errorMessage: runtimeError.message } : {}),
     });
-    if (reason !== "toolUse") session.turnId = undefined;
+    if (reason !== "toolUse" && !session.queuedSteering)
+      session.turnId = undefined;
   };
 
   const track = (session: Session, operation: Promise<void>): void => {
@@ -348,6 +390,9 @@ export function createClaudeRuntime(
   const dispose = (session: Session): Promise<void> => {
     if (session.closing) return session.closing;
     session.closed = true;
+    session.active?.admissionStop?.abort();
+    clearTimeout(session.queuedSteering?.timer);
+    clearTimeout(session.continuation?.timer);
     for (const pending of session.parked.values()) clearTimeout(pending.timer);
     for (const proposal of session.completedProposals.values())
       clearTimeout(proposal.timer);
@@ -370,6 +415,7 @@ export function createClaudeRuntime(
 
   const abort = (session: Session, round: Round, cause: RuntimeError): void => {
     if (round.done) return;
+    round.admissionStop?.abort();
     session.invalidated ??= "abort";
     finish(
       session,
@@ -416,6 +462,151 @@ export function createClaudeRuntime(
       [...round.proposals.keys()].some((id) => session.parked.has(id))
     )
       finish(session, round, "toolUse");
+  };
+
+  const splitSteering = (session: Session, round: Round): void => {
+    if (
+      !round.done &&
+      session.queuedSteering?.accepted &&
+      round.proposals.size === 0 &&
+      session.parked.size === 0 &&
+      round.messages.size > 0 &&
+      [...round.messages.values()].every((msg) => msg.ended)
+    )
+      finish(session, round, "stop", undefined, round.deferredTerminal);
+  };
+
+  const startSteering = (session: Session, round: Round): void => {
+    const source = round.request.activeSteering;
+    if (
+      !source ||
+      options.driver.capabilities.steering !== "active-queue" ||
+      round.done
+    )
+      return;
+    const stop = new AbortController();
+    const admissionStop = new AbortController();
+    round.steeringStop = stop;
+    round.admissionStop = admissionStop;
+    round.steeringPump = (async () => {
+      let claim:
+        | import("../contracts/index.js").ActiveSteeringClaim
+        | undefined;
+      let sent = false;
+      try {
+        while (!claim && !stop.signal.aborted) {
+          await untilStopped(source.wait(stop.signal), stop.signal);
+          if (stop.signal.aborted) return;
+          claim = await untilStopped(
+            source.claim(stop.signal),
+            stop.signal,
+            (late) => late?.reject(),
+          );
+          if (!claim)
+            await untilStopped(
+              new Promise<void>((resolve) => setTimeout(resolve, 10)),
+              stop.signal,
+            );
+        }
+        if (!claim) return;
+        if (
+          stop.signal.aborted ||
+          round.done ||
+          session.queuedSteering ||
+          session.parked.size ||
+          round.proposals.size
+        ) {
+          claim.reject();
+          claim = undefined;
+          return;
+        }
+        if (
+          !Array.isArray(claim.contents) ||
+          !claim.contents.length ||
+          claim.contents.some(
+            (content) =>
+              !Array.isArray(content) ||
+              !content.length ||
+              content.some(
+                (part) =>
+                  !part ||
+                  (part.type === "text"
+                    ? typeof part.text !== "string"
+                    : part.type !== "image" ||
+                      typeof part.data !== "string" ||
+                      typeof part.mimeType !== "string"),
+              ),
+          )
+        ) {
+          claim.reject();
+          claim = undefined;
+          return;
+        }
+        const queued: QueuedSteering = {
+          contents: structuredClone(claim.contents),
+          commandId: randomUUID(),
+          accepted: false,
+          started: false,
+        };
+        session.queuedSteering = queued;
+        sent = true;
+        const admissionTimer = setTimeout(
+          () =>
+            admissionStop.abort(
+              error(
+                "timeout",
+                "Claude didn't acknowledge active steering admission",
+              ),
+            ),
+          round.request.settings.toolResultTimeoutMs,
+        );
+        let submitted: boolean | undefined;
+        try {
+          submitted = await untilStopped(
+            session.driver
+              .submitPrompt({
+                turnId: session.turnId!,
+                content: queued.contents.flat(),
+                priority: "next",
+                steering: "active-queue",
+                commandId: queued.commandId,
+              })
+              .then(() => true),
+            admissionStop.signal,
+          );
+        } finally {
+          clearTimeout(admissionTimer);
+        }
+        if (
+          !submitted &&
+          (!queued.accepted || session.closed || session.invalidated)
+        )
+          throw (
+            admissionStop.signal.reason ??
+            error("aborted", "Active steering admission was interrupted")
+          );
+        queued.accepted = true;
+        claim.accept();
+        claim = undefined;
+        if (!queued.started)
+          queued.timer = setTimeout(() => {
+            reject(
+              session,
+              error("timeout", "Claude didn't start admitted steering"),
+            );
+          }, round.request.settings.toolResultTimeoutMs);
+        splitSteering(session, round);
+        if (round.deferredTerminal && !round.done)
+          finish(session, round, "stop", undefined, round.deferredTerminal);
+      } catch (cause) {
+        claim?.reject();
+        if (sent) session.invalidated = "abort";
+        if (!stop.signal.aborted || sent) {
+          session.failure = failure(cause, "protocol");
+          reject(session, session.failure);
+        }
+      }
+    })();
   };
   const propose = (
     session: Session,
@@ -593,6 +784,53 @@ export function createClaudeRuntime(
     const child = Boolean(
       event.attribution.parentToolUseId || event.attribution.agentId,
     );
+    if (
+      !child &&
+      event.type === "observation" &&
+      event.subtype === "steering-admission"
+    ) {
+      for (const queued of [session.queuedSteering, session.continuation])
+        if (queued?.commandId === event.data.commandId) {
+          if (event.data.state === "started") {
+            queued.started = true;
+            clearTimeout(queued.timer);
+          } else if (event.data.state === "queued") {
+            queued.accepted = true;
+            if (session.active) {
+              splitSteering(session, session.active);
+              if (session.active.deferredTerminal && !session.active.done)
+                finish(
+                  session,
+                  session.active,
+                  "stop",
+                  undefined,
+                  session.active.deferredTerminal,
+                );
+            }
+          }
+        }
+    }
+    if (!child && event.type === "turn_end") {
+      const queued = session.queuedSteering ?? session.continuation;
+      if (queued && event.status === "success") {
+        if (event.commandIds?.includes(queued.commandId)) {
+          queued.started = true;
+          clearTimeout(queued.timer);
+        }
+        const original = event.commandIds?.length
+          ? !event.commandIds.includes(queued.commandId)
+          : !queued.started;
+        if (original) {
+          const current = session.active;
+          if (current && !current.done && session.queuedSteering) {
+            current.deferredTerminal = event;
+            if (queued.accepted)
+              finish(session, current, "stop", undefined, event);
+          }
+          return;
+        }
+      }
+    }
     if (event.type === "initialized" && !child) {
       if (
         session.identity.claudeSessionId &&
@@ -701,6 +939,17 @@ export function createClaudeRuntime(
           );
           void dispose(session).catch(() => {});
         }
+        if (session.queuedSteering && !child) {
+          if (session.backlog.length >= 256)
+            reject(
+              session,
+              error(
+                "protocol",
+                "Claude continuation exceeded the resident event backlog",
+              ),
+            );
+          else session.backlog.push(event);
+        }
         return;
       }
       if (
@@ -716,7 +965,15 @@ export function createClaudeRuntime(
         ].includes(event.type)
       )
         return;
-      if (session.backlog.length < 256) session.backlog.push(event);
+      if (session.backlog.length >= 256)
+        reject(
+          session,
+          error(
+            "protocol",
+            "Claude continuation exceeded the resident event backlog",
+          ),
+        );
+      else session.backlog.push(event);
       return;
     }
     if (child) {
@@ -868,6 +1125,7 @@ export function createClaudeRuntime(
           if (content.type === "tool_call")
             propose(session, round, content, true);
         maybeParked(session, round);
+        splitSteering(session, round);
         break;
       }
       case "host_tool_request": {
@@ -934,6 +1192,10 @@ export function createClaudeRuntime(
                 ? "length"
                 : "stop";
         finish(session, round, reason, event.error, event);
+        if (!session.queuedSteering) {
+          clearTimeout(session.continuation?.timer);
+          session.continuation = undefined;
+        }
         if (reason === "error" || reason === "aborted") {
           session.invalidated ??= "abort";
           void dispose(session).catch(() => {});
@@ -1026,7 +1288,11 @@ export function createClaudeRuntime(
 
   const acquireSession = async (
     request: HostRoundRequest,
-  ): Promise<{ session: Session; rebuilt: boolean }> => {
+  ): Promise<{
+    session: Session;
+    rebuilt: boolean;
+    continuation?: boolean;
+  }> => {
     const key = request.session.sessionId;
     const inFlight = opening.get(key);
     if (inFlight) return { session: await inFlight, rebuilt: true };
@@ -1034,6 +1300,27 @@ export function createClaudeRuntime(
     if (previous?.active && !previous.active.done)
       throw new Error("Another host round already owns this session");
     let history = precedingHistory(request);
+    const queued = previous?.queuedSteering;
+    if (queued) {
+      const suffix = request.transcript.slice(-queued.contents.length);
+      if (
+        !queued.accepted ||
+        suffix.length !== queued.contents.length ||
+        suffix.some(
+          (entry, index) =>
+            entry.role !== "user" ||
+            digest(entry.content) !== digest(queued.contents[index]),
+        )
+      ) {
+        previous.invalidated = "abort";
+        await dispose(previous);
+        throw error(
+          "history",
+          "Host continuation doesn't acknowledge accepted steering in queue order",
+        );
+      }
+      history = request.transcript.slice(0, -queued.contents.length);
+    }
     const incomingResults =
       request.input.kind === "tool-results"
         ? [
@@ -1139,7 +1426,38 @@ export function createClaudeRuntime(
       };
       previous.expected = remaining ?? [];
       previous.request = request;
-      return { session: previous, rebuilt: false };
+      if (queued) {
+        clearTimeout(queued.timer);
+        previous.expected.push(
+          ...queued.contents.map(
+            (content): TranscriptMessage => ({ role: "user", content }),
+          ),
+        );
+        previous.queuedSteering = undefined;
+        previous.continuation = queued;
+        if (!queued.started)
+          queued.timer = setTimeout(
+            () =>
+              reject(
+                previous,
+                error("timeout", "Claude didn't start admitted steering"),
+              ),
+            request.settings.toolResultTimeoutMs,
+          );
+      }
+      return {
+        session: previous,
+        rebuilt: false,
+        continuation: Boolean(queued),
+      };
+    }
+    if (queued && previous) {
+      previous.invalidated = "abort";
+      await dispose(previous);
+      throw error(
+        "history",
+        "Accepted steering requires its original resident session and matching history",
+      );
     }
     if (previous) await dispose(previous);
     if (request.input.kind === "tool-results") {
@@ -1179,7 +1497,11 @@ export function createClaudeRuntime(
 
   const acquire = (
     request: HostRoundRequest,
-  ): Promise<{ session: Session; rebuilt: boolean }> => {
+  ): Promise<{
+    session: Session;
+    rebuilt: boolean;
+    continuation?: boolean;
+  }> => {
     const key = request.session.sessionId;
     const pending = acquiring.get(key);
     if (pending)
@@ -1285,7 +1607,10 @@ export function createClaudeRuntime(
         session.sequence = lastSequence;
         if (!round.done) {
           if (session.failure) finish(session, round, "error", session.failure);
-          else if (request.input.kind === "prompt" || acquired.rebuilt) {
+          else if (
+            (request.input.kind === "prompt" || acquired.rebuilt) &&
+            !acquired.continuation
+          ) {
             if (
               request.input.kind === "prompt" &&
               (session.parked.size ||
@@ -1316,7 +1641,7 @@ export function createClaudeRuntime(
               }),
               round.finished,
             ]);
-          } else {
+          } else if (request.input.kind === "tool-results") {
             const unique = new Map<string, HostToolResult>();
             for (const result of request.input.results) {
               const prior =
@@ -1350,7 +1675,11 @@ export function createClaudeRuntime(
               session.parked.delete(result.toolCallId);
               session.delivered.set(result.toolCallId, result);
             }
-            if (request.input.steering?.length && !round.done) {
+            if (
+              request.input.steering?.length &&
+              !round.done &&
+              !acquired.continuation
+            ) {
               session.expected.push({
                 role: "user",
                 content: request.input.steering,
@@ -1383,7 +1712,27 @@ export function createClaudeRuntime(
             }
           }
         }
-        for await (const event of round.channel) yield event;
+        if (!round.done) startSteering(session, round);
+        for await (const event of round.channel) {
+          if (event.type === "round_end") {
+            await round.steeringPump;
+            if (
+              session.failure &&
+              session.invalidated &&
+              event.reason !== "aborted" &&
+              event.reason !== "error"
+            ) {
+              yield {
+                ...event,
+                reason: "error",
+                pendingToolCallIds: [],
+                error: session.failure,
+              };
+              continue;
+            }
+          }
+          yield event;
+        }
       } catch (cause) {
         const runtimeError = failure(cause, "protocol");
         if (session && round) {
@@ -1411,6 +1760,7 @@ export function createClaudeRuntime(
             round.abort as EventListener,
           );
           if (session.active === round) session.active = undefined;
+          await round.steeringPump;
         }
       }
     },

@@ -130,7 +130,7 @@ export function createCliDriver(
       persistedResume: false,
       structuredToolResults: true,
       images: true,
-      steering: "tool-boundary",
+      steering: "active-queue",
       interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
       forwardSubagentText: true,
@@ -231,15 +231,16 @@ interface ParkedCall {
 }
 class CliSession implements ClaudeDriverSession {
   readonly events = new EventQueue<ClaudeDriverEvent>();
-  private readonly promptReceipts = new PromptReceipts((commandId, state) =>
+  private readonly promptReceipts = new PromptReceipts((commandId, state) => {
+    if (state === "started") this.active = true;
     this.emit({
       type: "observation",
       family: "diagnostic",
       subtype: "steering-admission",
       data: { commandId, state },
       attribution: {},
-    }),
-  );
+    });
+  });
   private sequence = 0;
   private child!: ChildProcessWithoutNullStreams;
   private server!: Server;
@@ -454,6 +455,15 @@ class CliSession implements ClaudeDriverSession {
           !event.attribution.agentId
         )
           this.active = false;
+        if (event.type === "turn_end" && record(packet)) {
+          const ids = [
+            packet.user_message_uuid,
+            ...(Array.isArray(packet.user_message_uuids)
+              ? packet.user_message_uuids
+              : []),
+          ].filter((id): id is string => typeof id === "string");
+          if (ids.length) event.commandIds = ids;
+        }
         this.emit(event);
       }
     });
@@ -775,8 +785,12 @@ class CliSession implements ClaudeDriverSession {
   async submitPrompt(prompt: DriverPrompt): Promise<void> {
     if (prompt.priority && prompt.priority !== "next")
       throw new Error("CLI steering priorities unsupported");
-    const steering = prompt.steering === "tool-boundary";
-    if (steering && (!this.active || this.turnId !== prompt.turnId))
+    const steering = prompt.steering !== undefined;
+    if (
+      steering &&
+      (this.turnId !== prompt.turnId ||
+        (prompt.steering === "tool-boundary" && !this.active))
+    )
       throw new Error("CLI steering requires the matching active turn");
     if (steering && prompt.priority !== "next")
       throw new Error("CLI tool-boundary steering requires next priority");
@@ -813,7 +827,10 @@ class CliSession implements ClaudeDriverSession {
       content.unshift(...history);
     }
     const receipt = steering
-      ? this.promptReceipts.register(this.request.settings.toolResultTimeoutMs)
+      ? this.promptReceipts.register(
+          this.request.settings.toolResultTimeoutMs,
+          prompt.commandId,
+        )
       : undefined;
     try {
       await this.write({

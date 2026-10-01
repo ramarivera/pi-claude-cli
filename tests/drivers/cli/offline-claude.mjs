@@ -62,6 +62,30 @@ if (args.includes("--version")) {
       uuid: packet.uuid,
     });
     const action = packet.message.content.at(-1).text ?? "image";
+    if (
+      action === "active-queued-followup" &&
+      packet.priority === "next" &&
+      packet.uuid
+    ) {
+      send({
+        type: "command_lifecycle",
+        command_uuid: packet.uuid,
+        state: "queued",
+      });
+      send({
+        type: "command_lifecycle",
+        command_uuid: packet.uuid,
+        state: "started",
+      });
+      send({ type: "assistant", text: "queued followup" });
+      send({
+        type: "result",
+        subtype: "success",
+        user_message_uuid: packet.uuid,
+        user_message_uuids: [packet.uuid],
+      });
+      return;
+    }
     if (boundaryTurn && packet.priority) {
       if (packet.priority !== "next" || !packet.uuid)
         throw new Error("Boundary input must carry next priority and a UUID");

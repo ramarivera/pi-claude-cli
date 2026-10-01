@@ -2,6 +2,8 @@
 
 Research for `pcc-6se`, checked September 30–October 1, 2026. The supported fix is steering at a parked host-tool boundary: queue the user's correction, wait for native queue admission, then release the outstanding MCP results. It doesn't implement immediate input through OMP's `LiveSteering` channel.
 
+The subsequent main-branch change `pcc-9g6` adds active queue acceptance through OMP's native `LiveSteering` channel for both drivers. It submits `next` input during generated text, accepts the host claim after native admission, and preserves the continuation across OMP's following provider request without resubmission. Real OMP CLI/SDK cases verified admission before the original message ended, matching consumption receipts, exactly one native history correction and resident follow-up. This is T3-style active queueing; arbitrary generation preemption remains outside the guarantee. See [current source research and host ownership](../../openspec/changes/add-active-claude-steering/research.md) and [execution evidence](../../openspec/changes/add-active-claude-steering/execution.md). The sections below describe the released 0.4.3 boundary fix and its original reference snapshot.
+
 ## The warning and the actual capability
 
 OMP supplies a `LiveSteering` object even when it contains no input. The adapter previously used that object's presence to display an unconditional steering warning, so ordinary prompts showed the warning. Removing that status fixes the misleading UI; it doesn't establish that queued input reaches Claude. Capability checks belong on actual submitted steering content.

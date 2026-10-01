@@ -17,11 +17,22 @@ export class PromptReceipts {
     ) => void,
   ) {}
 
-  register(timeoutMs: number): {
+  register(
+    timeoutMs: number,
+    commandId = randomUUID() as string,
+  ): {
     uuid: ReturnType<typeof randomUUID>;
     accepted: Promise<void>;
   } {
-    const uuid = randomUUID();
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        commandId,
+      )
+    )
+      throw new Error("Steering command requires a UUID");
+    const uuid = commandId as ReturnType<typeof randomUUID>;
+    if (this.pending.has(uuid) || this.admitted.has(uuid))
+      throw new Error("Duplicate steering command UUID");
     const accepted = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(uuid);

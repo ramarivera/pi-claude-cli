@@ -740,3 +740,79 @@ describe("official SDK query (offline doubles)", () => {
     );
   });
 });
+
+it("admits active queued input after an original result and reactivates boundary steering on consumption", async () => {
+  const { session, t } = await open();
+  const events = session.events[Symbol.asyncIterator]();
+  const initial = session.submitPrompt({ turnId: "retained", content: [] });
+  await t.input.next();
+  const incoming = t.input.next();
+  await initial;
+  t.output.push({
+    type: "turn_end",
+    status: "success",
+    subtype: "success",
+    isError: false,
+    attribution: {},
+  });
+  await events.next();
+  const commandId = "10000000-0000-4000-8000-000000000000";
+  const pending = session.submitPrompt({
+    turnId: "retained",
+    content: [{ type: "text", text: "correction" }],
+    priority: "next",
+    steering: "active-queue",
+    commandId,
+  });
+  expect((await incoming).value).toMatchObject({
+    uuid: commandId,
+    priority: "next",
+  });
+  const next = t.input.next();
+  t.output.push({
+    type: "command_lifecycle",
+    command_uuid: commandId,
+    state: "queued",
+  });
+  await pending;
+  expect((await events.next()).value).toMatchObject({
+    data: { commandId, state: "queued" },
+  });
+  t.output.push({
+    type: "command_lifecycle",
+    command_uuid: commandId,
+    state: "started",
+  });
+  expect((await events.next()).value).toMatchObject({
+    data: { commandId, state: "started" },
+  });
+  const boundary = session.submitPrompt({
+    turnId: "retained",
+    content: [],
+    priority: "next",
+    steering: "tool-boundary",
+  });
+  const packet = (await next).value!;
+  const idle = t.input.next();
+  t.output.push({
+    type: "command_lifecycle",
+    command_uuid: packet.uuid,
+    state: "queued",
+  });
+  await expect(boundary).resolves.toBeUndefined();
+  await events.next();
+  t.output.push({
+    type: "turn_end",
+    status: "success",
+    subtype: "success",
+    isError: false,
+    user_message_uuids: [commandId],
+    attribution: {},
+  });
+  expect((await events.next()).value).toMatchObject({
+    commandIds: [commandId],
+    attribution: { turnId: "retained" },
+  });
+  await session.close();
+  expect(await idle).toMatchObject({ done: true });
+});

@@ -167,7 +167,7 @@ describe("current CLI controls (offline bidirectional child double)", () => {
       data: { request: { subtype: "initialize", supportedDialogKinds: [] } },
     });
     expect(driver.capabilities).toMatchObject({
-      steering: "tool-boundary",
+      steering: "active-queue",
       interactions: ["permission", "elicitation"],
       supportedDialogKinds: [],
     });

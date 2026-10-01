@@ -1,5 +1,6 @@
 import type {
   Context,
+  LiveSteering,
   Model,
   SimpleStreamOptions,
   Tool,
@@ -7,6 +8,7 @@ import type {
 import type { RuntimeConfiguration } from "../../../entrypoints/config.js";
 import type {
   AssistantContent,
+  ActiveSteeringSource,
   HostRoundRequest,
   HostSessionIdentity,
   HostToolResult,
@@ -78,10 +80,7 @@ export function normalizeTranscript(context: Context): TranscriptMessage[] {
     if (message.role === "user" || message.role === "developer") {
       return {
         role: message.role,
-        content:
-          typeof message.content === "string"
-            ? [{ type: "text", text: message.content }]
-            : message.content.map((block) => ({ ...block })),
+        content: normalizeUserContent(message.content),
       };
     }
     if (message.role === "toolResult") {
@@ -161,6 +160,64 @@ export function normalizeTranscript(context: Context): TranscriptMessage[] {
         : { errorMessage: message.errorMessage }),
     };
   });
+}
+
+function normalizeUserContent(value: unknown): UserContent[] {
+  if (typeof value === "string") return [{ type: "text", text: value }];
+  if (!userContent(value)) throw new Error("Unsupported OMP user content");
+  return value.map((block) =>
+    block.type === "text"
+      ? { type: "text", text: block.text }
+      : { type: "image", data: block.data, mimeType: block.mimeType },
+  );
+}
+
+/** Keep host queue ownership in OMP; the core sees only Claude user content. */
+export function normalizeActiveSteering(
+  source: LiveSteering,
+): ActiveSteeringSource {
+  return {
+    wait: (signal) => source.wait(signal),
+    async claim(signal) {
+      if (signal.aborted) return undefined;
+      const native = await source.claim(signal);
+      if (!native) return undefined;
+      let settled = false;
+      const settle = (accepted: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (accepted) native.accept();
+        else native.reject();
+      };
+      if (signal.aborted) {
+        settle(false);
+        return undefined;
+      }
+      try {
+        if (!Array.isArray(native.messages) || !native.messages.length)
+          throw new Error("OMP active steering requires user messages");
+        const contents = native.messages.map((message): UserContent[] => {
+          if (message.role !== "user" || message.providerPayload !== undefined)
+            throw new Error("Unsupported OMP active steering message");
+          const content =
+            typeof message.content === "string"
+              ? [{ type: "text" as const, text: message.content }]
+              : message.content;
+          if (!userContent(content) || !content.length)
+            throw new Error("Unsupported OMP active steering content");
+          return normalizeUserContent(content);
+        });
+        return {
+          contents,
+          accept: () => settle(true),
+          reject: () => settle(false),
+        };
+      } catch (error) {
+        settle(false);
+        throw error;
+      }
+    },
+  };
 }
 
 export function toRequest(
@@ -263,6 +320,11 @@ export function toRequest(
     },
     auth: configuration.auth,
     signal: options.signal,
+    // Utility calls own disposable sessions and mustn't consume the agent queue.
+    ...(options.liveSteering &&
+    (options.sessionId || options.providerSessionState)
+      ? { activeSteering: normalizeActiveSteering(options.liveSteering) }
+      : {}),
   };
 }
 
@@ -285,7 +347,11 @@ function record(value: unknown): value is Record<string, unknown> {
 
 /** Public request observation redacts configured credentials before user hooks run. */
 export function payloadForHook(original: HostRoundRequest): HostRoundRequest {
-  const copied = structuredClone({ ...original, signal: undefined });
+  const copied = structuredClone({
+    ...original,
+    signal: undefined,
+    activeSteering: undefined,
+  });
   if (copied.auth.mode === "api-key") copied.auth.apiKey = "[redacted]";
   copied.settings = {
     ...copied.settings,
@@ -314,7 +380,7 @@ export function replacePayload(
   if (!record(replacement))
     throw new Error("OMP onPayload must return a HostRoundRequest");
   const data = jsonObject(
-    { ...replacement, signal: undefined },
+    { ...replacement, signal: undefined, activeSteering: undefined },
     "OMP payload replacement",
   );
   const publicRequest = payloadForHook(original);

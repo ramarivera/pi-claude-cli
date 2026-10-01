@@ -38,7 +38,7 @@ Native Claude tools are disabled by default. Explicitly configured Claude tools 
 
 The shared core reconciles streaming deltas and assistant snapshots, preserves thinking signatures and attributed progress, and reports result/error boundaries. Host history, tool schemas, cwd, branch and settings determine whether a resident session can continue. Divergent or imported history is rebuilt as labelled user-history replay; this isn't native restoration of private Claude session files. Failed turns don't automatically retry through the other driver.
 
-Both drivers support queued steering at host tool boundaries: supplemental input is admitted by Claude before the original tool results are released. Pi/OMP own the queue during inference. Immediate interruption during text generation isn't integrated; see [the versioned steering research](docs/research/claude-steering.md).
+Both drivers support queued steering at host tool boundaries: supplemental input is admitted by Claude before the original tool results are released. OMP additionally accepts corrections while text streams, transferring its claim only after native queue admission and continuing through the same Claude session without resending the correction. Pi retains its native boundary queue. Active input uses `next` delivery; it doesn't request arbitrary token-generation interruption. See [the versioned steering research](docs/research/claude-steering.md).
 
 ## Configuration
 
@@ -76,7 +76,7 @@ npm run verify:plan
 
 Offline tests don't make authenticated model calls. `npm run test:live` reports four skipped combinations unless `PI_CLAUDE_LIVE_E2E=1`; enabled runs require the actual hosts, official Claude runtime and selected credentials. They consume real account resources. The live harness and its receipts are documented under [live harness and receipts](docs/testing/live-harness.md).
 
-`npm run test:steering` runs offline boundary checks and skips its four actual-host
+`npm run test:steering` runs offline checks and skips its six actual-host
 cases unless `PI_CLAUDE_BOUNDARY_E2E=1`. Set `PI_CLAUDE_BOUNDARY_CASE=omp+cli`
 (or another host/driver pair) to select one paid queued-steering case.
 These cases default to Sonnet 5.5. Set `PI_CLAUDE_BOUNDARY_INSTALLED=1` with the

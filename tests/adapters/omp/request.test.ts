@@ -1,14 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   Context,
   Model,
   Tool,
   SimpleStreamOptions,
+  LiveSteerClaim,
 } from "@oh-my-pi/pi-ai";
 import {
   payloadForHook,
   normalizeTools,
   normalizeTranscript,
+  normalizeActiveSteering,
   replacePayload,
   toRequest,
 } from "../../../src/adapters/omp/request.js";
@@ -26,6 +28,127 @@ function request(options: SimpleStreamOptions = {}) {
 }
 
 describe("native OMP request normalization", () => {
+  it("attaches the active channel only to persistent provider calls and preserves it across hooks", () => {
+    const liveSteering = { wait: vi.fn(), claim: vi.fn() };
+    expect(request({ liveSteering }).activeSteering).toBeUndefined();
+    const original = request({ liveSteering, sessionId: "host" });
+    expect(original.activeSteering).toBeDefined();
+    expect(
+      request({ liveSteering, providerSessionState: new Map() }).activeSteering,
+    ).toBeDefined();
+    const payload = payloadForHook(original);
+    expect(payload.activeSteering).toBeUndefined();
+    const replacement = replacePayload(original, payload);
+    expect(replacement.activeSteering).toBe(original.activeSteering);
+    expect(liveSteering.claim).not.toHaveBeenCalled();
+  });
+  it("transfers text and image content without native types and settles a claim only once", async () => {
+    const accept = vi.fn();
+    const reject = vi.fn();
+    const native: LiveSteerClaim = {
+      messages: [
+        { role: "user", content: "correction", timestamp: 0, steering: true },
+        {
+          role: "user",
+          content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+          timestamp: 1,
+        },
+      ],
+      accept,
+      reject,
+    };
+    const source = normalizeActiveSteering({
+      wait: vi.fn(),
+      claim: vi.fn(async () => native),
+    });
+    const claim = await source.claim(new AbortController().signal);
+    expect(claim?.contents).toEqual([
+      [{ type: "text", text: "correction" }],
+      [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+    ]);
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    claim?.accept();
+    claim?.reject();
+    claim?.accept();
+    expect(accept).toHaveBeenCalledOnce();
+    expect(reject).not.toHaveBeenCalled();
+  });
+  it.each([
+    { messages: [{ role: "assistant", content: "wrong role", timestamp: 0 }] },
+    {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "audio", data: "YQ==", mimeType: "audio/wav" }],
+          timestamp: 0,
+        },
+      ],
+    },
+    {
+      messages: [
+        {
+          role: "user",
+          content: "opaque",
+          providerPayload: { type: "unknown" },
+          timestamp: 0,
+        },
+      ],
+    },
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              url: "https://example.test/image.png",
+              mimeType: "image/png",
+            },
+          ],
+          timestamp: 0,
+        },
+      ],
+    },
+    { messages: [] },
+  ])(
+    "returns unsupported active input to the host queue without accepting it: %j",
+    async ({ messages }) => {
+      const accept = vi.fn();
+      const reject = vi.fn();
+      const source = normalizeActiveSteering({
+        wait: vi.fn(),
+        claim: vi.fn(
+          async () =>
+            ({ messages, accept, reject }) as unknown as LiveSteerClaim,
+        ),
+      });
+      await expect(source.claim(new AbortController().signal)).rejects.toThrow(
+        /OMP active steering/,
+      );
+      expect(accept).not.toHaveBeenCalled();
+      expect(reject).toHaveBeenCalledOnce();
+    },
+  );
+  it("rejects a claim that arrives after the active response aborts", async () => {
+    const controller = new AbortController();
+    const accept = vi.fn();
+    const reject = vi.fn();
+    const claim = vi.fn(async () => {
+      controller.abort();
+      return {
+        messages: [{ role: "user" as const, content: "late", timestamp: 0 }],
+        accept,
+        reject,
+      };
+    });
+    const source = normalizeActiveSteering({ wait: vi.fn(), claim });
+    expect(await source.claim(controller.signal)).toBeUndefined();
+    expect(reject).toHaveBeenCalledOnce();
+    expect(accept).not.toHaveBeenCalled();
+    await source.claim(controller.signal);
+    expect(claim).toHaveBeenCalledOnce();
+  });
   it.each([
     [
       "hashline",

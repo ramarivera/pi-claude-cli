@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -36,6 +36,8 @@ const enabled = process.env.PI_CLAUDE_BOUNDARY_E2E === "1";
 const selected = process.env.PI_CLAUDE_BOUNDARY_CASE;
 const installed = process.env.PI_CLAUDE_BOUNDARY_INSTALLED === "1";
 const keepFailed = process.env.PI_CLAUDE_BOUNDARY_KEEP_FAILED === "1";
+const activeEnabled = process.env.PI_CLAUDE_ACTIVE_E2E === "1";
+const activeSelected = process.env.PI_CLAUDE_ACTIVE_CASE;
 const boundaryModel =
   process.env.PI_CLAUDE_BOUNDARY_MODEL ?? "claude-sonnet-5-5";
 assert.ok(
@@ -51,6 +53,61 @@ if (enabled && selected)
     CASES.includes(selected),
     "Invalid PI_CLAUDE_BOUNDARY_CASE selection",
   );
+if (activeEnabled && activeSelected)
+  assert.ok(
+    ["omp+cli", "omp+sdk"].includes(activeSelected),
+    "Invalid PI_CLAUDE_ACTIVE_CASE selection",
+  );
+
+function activeAdmissionProof(events) {
+  const consumption = steeringConsumption(events);
+  const firstStop = events.find(
+    (entry) =>
+      entry.type === "native-diagnostic" &&
+      entry.data.event.subtype === "core-message-stop",
+  );
+  const queued = events.find(
+    (entry) =>
+      entry.type === "steering-admission" && entry.data.state === "queued",
+  );
+  return {
+    ...consumption,
+    admittedBeforeOriginalMessageEnded:
+      Boolean(queued && firstStop) &&
+      queued.data.sequence < firstStop.data.event.sequence,
+  };
+}
+
+test("active steering timing proof rejects boundary-only admission", () => {
+  const admission = (state, sequence) => ({
+    type: "steering-admission",
+    data: { commandId: "synthetic-command", state, sequence },
+  });
+  const stop = {
+    type: "native-diagnostic",
+    data: { event: { subtype: "core-message-stop", sequence: 5 } },
+  };
+  assert.equal(
+    activeAdmissionProof([
+      admission("queued", 3),
+      stop,
+      admission("started", 6),
+    ]).admittedBeforeOriginalMessageEnded,
+    true,
+  );
+  assert.equal(
+    activeAdmissionProof([
+      stop,
+      admission("queued", 6),
+      admission("started", 7),
+    ]).admittedBeforeOriginalMessageEnded,
+    false,
+  );
+  assert.equal(
+    activeAdmissionProof([stop]).admittedBeforeOriginalMessageEnded,
+    false,
+  );
+});
 
 function observations(path) {
   return existsSync(path)
@@ -59,6 +116,29 @@ function observations(path) {
         .filter(Boolean)
         .map((line) => JSON.parse(line))
     : [];
+}
+
+function productionFingerprint() {
+  const hash = createHash("sha256");
+  function visit(relative) {
+    const path = join(ROOT, relative);
+    for (const entry of readdirSync(path, { withFileTypes: true }).sort(
+      (a, b) => a.name.localeCompare(b.name),
+    )) {
+      const name = join(relative, entry.name);
+      if (entry.isDirectory()) visit(name);
+      else if (entry.isFile() && entry.name.endsWith(".ts"))
+        hash
+          .update(name)
+          .update("\0")
+          .update(readFileSync(join(ROOT, name)))
+          .update("\0");
+    }
+  }
+  visit("src");
+  visit("entrypoints");
+  hash.update("index.ts\0").update(readFileSync(join(ROOT, "index.ts")));
+  return hash.digest("hex");
 }
 
 function assertNoSteeringWarning(events, hostKind) {
@@ -1729,6 +1809,7 @@ for (const name of CASES) {
           : "actual-authenticated-boundary-host-rpc",
         case: name,
         model: boundaryModel,
+        productionSha256: productionFingerprint(),
         started: new Date().toISOString(),
         budgets: {
           maxTurns: 8,
@@ -2256,6 +2337,253 @@ for (const name of CASES) {
         }
         console.log(
           `${name} boundary ${receipt.status}; sanitized receipt: ${receiptPath}`,
+        );
+      }
+      if (failure) throw failure;
+    },
+  );
+}
+
+// The pinned Pi provider contract has no active input channel. Its four-way
+// boundary matrix above remains the real native fallback proof; these cases
+// specifically drive OMP's LiveSteering during text generation without tools.
+for (const name of ["omp+cli", "omp+sdk"]) {
+  test(
+    `actual ${name}: accepts steering during text generation without duplicate delivery`,
+    {
+      skip: !activeEnabled
+        ? "Authenticated active-input E2E disabled; set PI_CLAUDE_ACTIVE_E2E=1"
+        : activeSelected && activeSelected !== name
+          ? `Not selected by PI_CLAUDE_ACTIVE_CASE=${activeSelected}`
+          : false,
+      timeout: 210000,
+    },
+    async (context) => {
+      const [, driver] = name.split("+");
+      const sandbox = scratchDirectory("a-");
+      const path = join(sandbox, "observations.jsonl");
+      const marker = `SYSTEM-${randomUUID()}`;
+      const supplementalMarker = `ACTIVE-${randomUUID()}`;
+      const receipt = {
+        schemaVersion: 1,
+        provenance: "actual-authenticated-active-input-host-rpc",
+        case: name,
+        model: boundaryModel,
+        productionSha256: productionFingerprint(),
+        started: new Date().toISOString(),
+        budgets: {
+          maxTurns: 8,
+          maxOutputTokens: 512,
+          maxBudgetUsd: 0.25,
+          wallClockMs: 180000,
+        },
+        phases: {},
+      };
+      let rpc;
+      let failure;
+      let stage = "setup";
+      try {
+        receipt.socketPathBytes = assertSocketCapacity(sandbox);
+        mkdirSync(join(sandbox, "t"));
+        configureHostIsolation("omp", sandbox);
+        const env = hostEnvironment(
+          "omp",
+          driver,
+          sandbox,
+          "unused-active-nonce",
+        );
+        Object.assign(env, {
+          PCC_E2E_BOUNDARY: "1",
+          PCC_E2E_SYSTEM_MARKER: marker,
+          PCC_E2E_STEER_MARKER: supplementalMarker,
+        });
+        receipt.versions = preflight("omp", env);
+        receipt.git = spawnSync("git", ["rev-parse", "HEAD"], {
+          cwd: ROOT,
+          encoding: "utf8",
+        }).stdout.trim();
+        const system = `Every answer must begin with ${marker}. This is an isolated synthetic test. Don't inspect files, credentials, account settings or network resources. Don't call any tools. Follow new user corrections when received.`;
+        const args = boundaryArgs("omp", sandbox, system);
+        args[args.indexOf("--tools") + 1] = "pcc_gate";
+        rpc = new RpcHost(receipt.versions.binary, args, env, sandbox, {
+          signal: context.signal,
+          deadline: Date.now() + 180000,
+        });
+        const originalState = await select(rpc, "omp");
+        rpc.rememberBaseline();
+        stage = "active-generation";
+        const since = rpc.frames.length;
+        const promptId = rpc.send("prompt", {
+          message:
+            "No tools. Write a numbered list of 18 simple facts about arithmetic, with exactly eight words per item. Begin immediately and keep going until item 18.",
+        });
+        await rpc.wait(
+          () =>
+            rpc.frames
+              .slice(since)
+              .find(
+                (frame) =>
+                  frame.type === "message_update" &&
+                  frame.assistantMessageEvent?.type === "text_delta",
+              ),
+          "actual text generation before active steering",
+          60000,
+        );
+        const supplemental = `New instruction: stop writing the list. In your next answer, after the system-required prefix, output only the exact marker ${supplementalMarker}. No tools.`;
+        await rpc.command("steer", { message: supplemental }, 4000);
+        receipt.phases.submission = {
+          actualTextDeltaObserved: true,
+          inputLength: supplemental.length,
+        };
+        // Native admission must happen while the original assistant message is
+        // still open. A tool boundary or a later ordinary prompt doesn't pass.
+        await rpc.wait(
+          () =>
+            observations(path).find(
+              (event) =>
+                event.type === "steering-admission" &&
+                event.data.state === "queued",
+            ),
+          "native active steering admission",
+          15000,
+        );
+        const result = await rpc.settled("omp", promptId, since);
+        assert.equal(result.status, "completed");
+        const { messages } = await rpc.command("get_messages");
+        const { text } = await rpc.command("get_last_assistant_text");
+        receipt.phases.answer = {
+          markerIncluded:
+            typeof text === "string" && text.includes(supplementalMarker),
+          length: typeof text === "string" ? text.length : 0,
+        };
+        textProof(text, marker, supplementalMarker);
+        const corrections = messages.filter(
+          (message) =>
+            message.role === "user" && userText(message) === supplemental,
+        );
+        receipt.phases.history = {
+          correctionCount: corrections.length,
+          liveSteered: corrections[0]?.liveSteered === true,
+          errors: assistantDiagnostics(messages).errorCount,
+          toolCalls: messages.flatMap((message) =>
+            message.role === "assistant"
+              ? message.content.filter((block) => block.type === "toolCall")
+              : [],
+          ).length,
+        };
+        assert.equal(
+          corrections.length,
+          1,
+          "Accepted input was lost or duplicated in native history",
+        );
+        assert.equal(
+          corrections[0].liveSteered,
+          true,
+          "OMP delivered input at a later ordinary boundary",
+        );
+        assert.equal(receipt.phases.history.errors, 0);
+        assert.equal(receipt.phases.history.toolCalls, 0);
+        const events = observations(path);
+        receipt.phases.consumption = activeAdmissionProof(events);
+        assert.equal(
+          receipt.phases.consumption.admittedBeforeOriginalMessageEnded,
+          true,
+          "Input wasn't admitted during token generation",
+        );
+        assert.equal(receipt.phases.consumption.matchingCommandIds, true);
+        assert.equal(receipt.phases.consumption.queuedBeforeStarted, true);
+        assert.equal(
+          receipt.phases.consumption.queuedCount,
+          1,
+          "Correction was sent to Claude more than once",
+        );
+        assertNoSteeringWarning(events, "omp");
+        const originalClaudeId = responseIds(events, driver)[0];
+        assert.ok(
+          responseIds(events, driver).every((id) => id === originalClaudeId),
+        );
+        receipt.phases.systemPrompt = assertSystemPrompt(events);
+        stage = "resident-after-steering";
+        const followup = await rpc.prompt(
+          "omp",
+          "No tools. Repeat the exact marker from my previous correction, after the mandatory system prefix.",
+        );
+        textProof(followup, marker, supplementalMarker);
+        assert.ok(
+          responseIds(observations(path), driver).every(
+            (id) => id === originalClaudeId,
+          ),
+          "Accepted-input history forced a Claude session rebuild",
+        );
+        const finalState = await rpc.command("get_state");
+        assert.equal(finalState.sessionId, originalState.sessionId);
+        assert.equal(finalState.model.id, originalState.model.id);
+        assert.equal(finalState.queuedMessageCount, 0);
+        receipt.phases.resident = {
+          rememberedCorrection: true,
+          hostSessionId: finalState.sessionId,
+          claudeSessionId: originalClaudeId,
+        };
+        receipt.stats = publicStats(await rpc.command("get_session_stats"));
+        stage = "cleanup";
+        await rpc.command("new_session");
+        receipt.transportCleanup = await rpc.transportIdle(join(sandbox, "t"));
+        receipt.status = "passed";
+      } catch (error) {
+        failure = error;
+        receipt.status = "failed";
+        receipt.failure = {
+          name: error.name,
+          stage,
+          classifier: errorClassifier(error.message),
+        };
+        if (rpc)
+          receipt.assistantDiagnostics = assistantDiagnostics(
+            rpc.frames
+              .filter((frame) => frame.type === "message_end")
+              .map((frame) => frame.message)
+              .filter(Boolean),
+          );
+      } finally {
+        try {
+          if (rpc) {
+            receipt.cleanup = await rpc.close();
+            assert.deepEqual(receipt.cleanup.survivors, []);
+            assert.deepEqual(receipt.cleanup.forcedChildren, []);
+            assert.equal(receipt.cleanup.hostRequiredKill, false);
+          }
+          receipt.privateTransportFiles = existsSync(join(sandbox, "t"))
+            ? readdirSync(join(sandbox, "t")).filter((file) =>
+                file.startsWith("pcc-cli-"),
+              )
+            : [];
+          assert.deepEqual(receipt.privateTransportFiles, []);
+        } catch (error) {
+          failure ??= error;
+          receipt.status = "failed";
+          receipt.cleanupFailure = { name: error.name };
+        }
+        receipt.finished = new Date().toISOString();
+        receipt.phases.consumption = activeAdmissionProof(observations(path));
+        receipt.observations = observations(path).filter((event) =>
+          [
+            "response",
+            "steering-admission",
+            "native-diagnostic",
+            "steering-input",
+            "steering-status",
+          ].includes(event.type),
+        );
+        const receiptPath = join(
+          receiptDirectory(),
+          `active-${name.replace("+", "-")}-${Date.now()}.json`,
+        );
+        writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n", {
+          mode: 0o600,
+        });
+        rmSync(sandbox, { recursive: true, force: true });
+        console.log(
+          `${name} active input ${receipt.status}; sanitized receipt: ${receiptPath}`,
         );
       }
       if (failure) throw failure;

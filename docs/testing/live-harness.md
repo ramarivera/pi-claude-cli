@@ -128,3 +128,33 @@ Set `PI_CLAUDE_BOUNDARY_INSTALLED=1` alongside the inference opt-in to use actua
 managed package discovery. This mode requires matching exact installed and
 managed release pins, retains the test observers, and restores only the Pi
 retry/compaction flags changed by the test. See [the release sequence](../releasing.md).
+
+## Active input while text streams
+
+The same test file additionally contains two actual OMP cases, CLI and SDK,
+behind a separate opt-in. It sends RPC steering after a real text delta and
+requires native admission before the original assistant message ends. The
+matching queued/started UUID must occur once; native history must contain one
+correction marked `liveSteered`. The final answer must honor it, and a later
+prompt must remember it using the same resident Claude session. No tools,
+history errors, warning text, forced cleanup, surviving processes or private
+transport files are allowed. Production source fingerprints accompany receipts.
+
+```nu
+with-env { PI_CLAUDE_ACTIVE_E2E: "1", PI_CLAUDE_ACTIVE_CASE: "omp+cli" } {
+  npm run test:steering
+}
+```
+
+Use `omp+sdk` for the other transport, or omit the case variable for both.
+Enable both `PI_CLAUDE_ACTIVE_E2E` and `PI_CLAUDE_BOUNDARY_E2E` to run all six
+authenticated cases sequentially. Each uses the existing bounded Sonnet 5.5
+configuration. Disabled cases are explicit skips; enabled missing prerequisites
+or an invalid case selection fail.
+
+This verifies active queue acceptance and continuation with `next`, not
+arbitrary generation preemption. Pi 0.99.1 doesn't expose the corresponding
+provider channel and retains boundary delivery. Native OMP 18.4.4 defers images
+before this channel; image/content normalization and ownership have offline
+coverage. These new source tests don't establish installation or publication
+of a new release. Exact results are in the [execution record](../../openspec/changes/add-active-claude-steering/execution.md).

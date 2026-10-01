@@ -153,6 +153,18 @@ export interface RuntimeSettings {
   settingSources?: readonly ("user" | "project" | "local")[];
 }
 
+export interface ActiveSteeringClaim {
+  contents: readonly (readonly UserContent[])[];
+  /** Native runtime owns the input; the host records it after this response. */
+  accept(): void;
+  /** Unsent input remains owned by the host's next request. */
+  reject(): void;
+}
+export interface ActiveSteeringSource {
+  wait(signal: AbortSignal): Promise<void>;
+  claim(signal: AbortSignal): Promise<ActiveSteeringClaim | undefined>;
+}
+
 export interface HostRoundRequest {
   roundId: string;
   session: HostSessionIdentity;
@@ -172,6 +184,7 @@ export interface HostRoundRequest {
   settings: RuntimeSettings;
   auth: AuthConfig;
   signal?: AbortSignal;
+  activeSteering?: ActiveSteeringSource;
 }
 
 export interface DriverCapabilities {
@@ -182,7 +195,7 @@ export interface DriverCapabilities {
   persistedResume: boolean;
   structuredToolResults: boolean;
   images: boolean;
-  steering: "unsupported" | "tool-boundary" | "live";
+  steering: "unsupported" | "tool-boundary" | "active-queue" | "live";
   interactions: readonly ("permission" | "elicitation" | "dialog")[];
   supportedDialogKinds: readonly string[];
   forwardSubagentText: boolean;
@@ -227,7 +240,9 @@ export interface DriverPrompt {
   content: readonly UserContent[];
   priority?: "now" | "next" | "later";
   /** Await native queue admission before releasing parked host tools. */
-  steering?: "tool-boundary";
+  steering?: "tool-boundary" | "active-queue";
+  /** Core-generated native command UUID, for active queue consumption. */
+  commandId?: string;
 }
 
 export interface EventAttribution {
@@ -392,6 +407,8 @@ export type DriverEventPayload =
   | {
       /** Claude result boundary. This does not close a resident session or its pump. */
       type: "turn_end";
+      /** Native user UUIDs answered by this result, when supplied. */
+      commandIds?: readonly string[];
       status: "success" | "error" | "aborted";
       subtype: string;
       isError: boolean;
