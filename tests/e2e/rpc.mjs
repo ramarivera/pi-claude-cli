@@ -401,8 +401,14 @@ export class RpcHost {
   track() {
     const snapshot = processes();
     let changed = true;
+    const hostStart = this.tracked.get(this.child.pid);
+    const hostOwned =
+      snapshot.has(this.child.pid) &&
+      (hostStart
+        ? snapshot.get(this.child.pid).start === hostStart
+        : !this.closed);
     const owned = new Set([
-      this.child.pid,
+      ...(hostOwned ? [this.child.pid] : []),
       ...[...this.tracked]
         .filter(([pid, start]) => snapshot.get(pid)?.start === start)
         .map(([pid]) => pid),
@@ -463,6 +469,7 @@ export class RpcHost {
   }
   async transportIdle(temp, { allowOwnedHelper } = {}) {
     let excludedNativeHelpers = 0;
+    let excludedNativeProcesses = [];
     await this.wait(
       () => {
         this.track();
@@ -481,6 +488,9 @@ export class RpcHost {
           ([pid]) => allowOwnedHelper?.(pid) === true,
         );
         excludedNativeHelpers = allowed.length;
+        excludedNativeProcesses = allowed.map(([pid]) =>
+          this.identities.get(pid),
+        );
         return alive.length === allowed.length && files.length === 0;
       },
       "natural Claude child and private MCP cleanup",
@@ -491,7 +501,9 @@ export class RpcHost {
       privateFiles: [],
       hostAlive: !this.closed,
       forced: false,
-      ...(excludedNativeHelpers ? { excludedNativeHelpers } : {}),
+      ...(excludedNativeHelpers
+        ? { excludedNativeHelpers, excludedNativeProcesses }
+        : {}),
     };
   }
   async wait(predicate, description, timeout = 20000) {
@@ -643,10 +655,21 @@ export class RpcHost {
     this.track();
     try {
       const signal = (pid, sig) => {
+        // Never signal a recycled PID or an unobserved process group. Only the
+        // individual processes whose start times we captured belong to this run.
+        const current = processes().get(pid);
+        if (
+          !current ||
+          current.start !== this.tracked.get(pid) ||
+          current.state === "Z"
+        )
+          return false;
         try {
           process.kill(pid, sig);
+          return true;
         } catch (error) {
           if (error.code !== "ESRCH") throw error;
+          return false;
         }
       };
       this.child.stdin.end();
@@ -668,9 +691,10 @@ export class RpcHost {
       const forcedChildren = new Set();
       const hostRequiredKill = !this.closed;
       if (hostRequiredKill) {
+        signal(this.child.pid, "SIGKILL");
         for (const pid of remaining())
-          if (pid !== this.child.pid) forcedChildren.add(pid);
-        signal(-this.child.pid, "SIGKILL");
+          if (pid !== this.child.pid && signal(pid, "SIGKILL"))
+            forcedChildren.add(pid);
       }
       // Some managed host extensions own a daemon with a bounded idle exit.
       // Give it its native grace; any survivor still enters strict cleanup below.
@@ -682,21 +706,13 @@ export class RpcHost {
         )
           await delay(50);
       for (const pid of remaining()) {
-        if (pid !== this.child.pid) forcedChildren.add(pid);
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch (error) {
-          if (error.code !== "ESRCH") throw error;
-        }
+        if (signal(pid, "SIGTERM") && pid !== this.child.pid)
+          forcedChildren.add(pid);
       }
       for (let n = 0; remaining().length && n < 60; n++) await delay(50);
       for (const pid of remaining()) {
-        if (pid !== this.child.pid) forcedChildren.add(pid);
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch (error) {
-          if (error.code !== "ESRCH") throw error;
-        }
+        if (signal(pid, "SIGKILL") && pid !== this.child.pid)
+          forcedChildren.add(pid);
       }
       for (let n = 0; remaining().length && n < 20; n++) await delay(50);
       assert.deepEqual(

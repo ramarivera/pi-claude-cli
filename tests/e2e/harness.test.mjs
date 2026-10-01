@@ -3,6 +3,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+// The Linux CI gate invokes this file; include the real process-ownership
+// regressions here as well as allowing their standalone focused invocation.
+import "./process-ownership.test.mjs";
 import { publicAssistant, publicStats, textProof } from "./diagnostics.mjs";
 import { hashlineProof } from "./hashline-proof.mjs";
 import {

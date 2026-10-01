@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { managedPiHelper, nativeHelperCleanup } from "./process-ownership.mjs";
 import {
   MODEL,
   ROOT,
@@ -116,6 +117,9 @@ for (const kind of ["pi", "omp"])
         ...(kind === "pi"
           ? { allowNonJsonOutput: managedPiStartupOutput }
           : {}),
+        ...(!sourceSmoke && kind === "pi"
+          ? { classifyProcess: managedPiHelper, childExitGraceMs: 7000 }
+          : {}),
       });
       const receipt = {
         provenance: sourceSmoke
@@ -132,6 +136,7 @@ for (const kind of ["pi", "omp"])
         ...(kind === "pi" ? { packageResolution: { PI_OFFLINE: "1" } } : {}),
         started: new Date().toISOString(),
       };
+      let failure;
       try {
         const { models } = await host.command("get_available_models");
         const registered = models.filter(
@@ -343,16 +348,59 @@ for (const kind of ["pi", "omp"])
           };
         }
         await host.command("new_session");
-        receipt.transportCleanup = await host.transportIdle(join(sandbox, "t"));
+        receipt.transportCleanup = await host.transportIdle(
+          join(sandbox, "t"),
+          !sourceSmoke && kind === "pi"
+            ? {
+                allowOwnedHelper: (pid) =>
+                  nativeHelperCleanup(
+                    {
+                      observedProcesses: [...host.identities.values()],
+                      forcedChildren: [pid],
+                    },
+                    host.baseline,
+                    host.child.pid,
+                    [...host.initialIdentities.values()],
+                    true,
+                  ).rejectedCount === 0,
+              }
+            : {},
+        );
         receipt.status = "passed";
       } catch (error) {
         receipt.status = "failed";
         receipt.error = { name: error.name, message: error.message };
-        throw error;
+        failure = error;
       } finally {
         receipt.responses = host.responses;
         receipt.cleanup = await host.close();
+        receipt.nativeHelperCleanup = nativeHelperCleanup(
+          receipt.cleanup,
+          host.baseline ?? new Set(),
+          host.child.pid,
+          [...host.initialIdentities.values()],
+          !sourceSmoke && kind === "pi",
+        );
         receipt.startupOutputCounts = host.startupOutputCounts;
+        let cleanupFailure;
+        try {
+          assert.deepEqual(receipt.cleanup.survivors, []);
+          assert.equal(receipt.cleanup.hostRequiredKill, false);
+          assert.equal(
+            receipt.nativeHelperCleanup.rejectedCount,
+            0,
+            "Claude transport or unverified child required forced harness cleanup",
+          );
+          assert.equal(
+            receipt.nativeHelperCleanup.allowedHelperCount,
+            receipt.cleanup.forcedChildren.length,
+            "Every forced child must have a native helper ownership proof",
+          );
+        } catch (error) {
+          cleanupFailure = error;
+          receipt.status = "failed";
+          receipt.cleanupFailure = { name: error.name, message: error.message };
+        }
         if (savedPiSettings) {
           const current = JSON.parse(readFileSync(piSettingsPath, "utf8"));
           // Restore only flags this smoke set to false; preserve other live
@@ -383,6 +431,8 @@ for (const kind of ["pi", "omp"])
         console.log(
           `${sourceSmoke ? "Source" : "Installed"}-package receipt: ${path}`,
         );
+        failure ??= cleanupFailure;
       }
+      if (failure) throw failure;
     },
   );
