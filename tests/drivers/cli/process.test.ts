@@ -189,6 +189,65 @@ const result = (id: string, text = id): HostToolResult => ({
 });
 
 describe("CLI resident process (offline child double)", () => {
+  it("maps native edit/write instructions in the actual CLI system-prompt file", async () => {
+    const r = request();
+    r.systemPrompt =
+      "Use edit for existing files and write for new files. Keep literal mcp__host__edit examples.";
+    r.tools = ["edit", "write", "read", "bash", "mcp__remote__query"].map(
+      (name) => ({
+        owner: "host" as const,
+        name,
+        description: `Native ${name} tool`,
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      }),
+    );
+    const { session, iterator, receipt } = await open({}, r);
+    await prompt(session, "tool inventory proof");
+    await until(iterator, (event) => event.type === "turn_end");
+    const actual = JSON.parse(await readFile(receipt, "utf8"))
+      .systemPrompt as string;
+    expect(actual.startsWith(r.systemPrompt + "\n\n")).toBe(true);
+    for (const tool of r.tools)
+      expect(actual).toContain(`"${tool.name}" -> "mcp__host__${tool.name}"`);
+    expect(actual).toContain(
+      "Claude built-in tools are disabled for this session.",
+    );
+    expect(actual).toContain(
+      "Use the mapped Claude callable name even when host instructions or history use the native name.",
+    );
+  });
+
+  it("lists only exposed host tools and the configured CLI built-ins", async () => {
+    const r = request();
+    r.tools = [
+      {
+        owner: "host",
+        name: "read",
+        description: "Read only",
+        inputSchema: { type: "object" },
+      },
+    ];
+    r.settings.claudeTools = ["Bash", "WebSearch"];
+    const { session, iterator, receipt } = await open({}, r);
+    await prompt(session, "tool inventory proof");
+    await until(iterator, (event) => event.type === "turn_end");
+    const actual = JSON.parse(await readFile(receipt, "utf8"));
+    expect(actual.systemPrompt).toContain('"read" -> "mcp__host__read"');
+    expect(actual.systemPrompt).not.toContain("mcp__host__edit");
+    expect(actual.systemPrompt).not.toContain("mcp__host__write");
+    expect(actual.systemPrompt).toContain(
+      'Configured Claude built-in tools: ["Bash","WebSearch"].',
+    );
+    expect(actual.systemPrompt).not.toContain("built-in tools are disabled");
+    expect(actual.args[actual.args.indexOf("--tools") + 1]).toBe(
+      "Bash,WebSearch",
+    );
+  });
+
   it("honors capability-validated effort over conflicting inherited runtime settings", async () => {
     const r = request();
     r.settings.effort = "high";
@@ -263,7 +322,9 @@ describe("CLI resident process (offline child double)", () => {
       environment: JsonObject;
       config: JsonObject;
     };
-    expect(before.systemPrompt).toBe(request().systemPrompt);
+    expect(
+      before.systemPrompt.startsWith(request().systemPrompt + "\n\n"),
+    ).toBe(true);
     expect((before.config.mcpServers as JsonObject).host).not.toHaveProperty(
       "env",
     );

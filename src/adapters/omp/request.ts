@@ -137,8 +137,7 @@ export function normalizeTranscript(context: Context): TranscriptMessage[] {
         case "redactedThinking":
           return {
             type: "thinking",
-            thinking: "",
-            signature: block.data,
+            thinking: block.data,
             redacted: true,
           };
         case "toolCall":

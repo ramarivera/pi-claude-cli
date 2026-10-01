@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { PiProjection } from "../../../src/adapters/pi/projection.js";
 import { collect, driver, model, tool } from "./support.js";
 import type { ClaudeRoundEvent } from "../../../src/contracts/index.js";
+import { normalizeTranscript } from "../../../src/adapters/pi/normalize.js";
+import { createClaudeEventNormalizer } from "../../../src/core/normalizer.js";
+import { messageDigest } from "../../../src/core/history.js";
+import { normalizeContext } from "@earendil-works/pi-ai";
 
 const end = (
   content: Extract<ClaudeRoundEvent, { type: "round_end" }>["content"] = [],
@@ -20,6 +24,49 @@ const call = {
 };
 
 describe("Pi event projection", () => {
+  it("preserves native redacted thinking through host history acknowledgement", async () => {
+    const normalizer = createClaudeEventNormalizer({
+      tools: [],
+      hostMcpServerName: "host",
+      requestedModel: model.id,
+    });
+    const normalized = normalizer.normalize({
+      type: "assistant",
+      uuid: "redacted-snapshot",
+      message: {
+        id: "redacted-message",
+        content: [{ type: "redacted_thinking", data: "opaque-bytes" }],
+        stop_reason: "end_turn",
+      },
+    });
+    const snapshot = normalized.find(
+      (event) => event.type === "assistant_snapshot",
+    );
+    if (!snapshot || snapshot.type !== "assistant_snapshot")
+      throw new Error("Missing redacted snapshot");
+    const projection = new PiProjection(model, []);
+    for (const event of normalized) projection.accept(driver(event));
+    projection.accept(end(snapshot.content));
+    await collect(projection.stream);
+    expect(projection.message.content).toEqual([
+      {
+        type: "thinking",
+        thinking: "opaque-bytes",
+        thinkingSignature: undefined,
+        redacted: true,
+      },
+    ]);
+    const acknowledged = normalizeTranscript(
+      normalizeContext({ messages: [projection.message] }),
+    )[0];
+    expect(messageDigest(acknowledged)).toBe(
+      messageDigest({
+        role: "assistant",
+        content: snapshot.content,
+        stopReason: "stop",
+      }),
+    );
+  });
   it("streams shared partial text before completion and reconciles full snapshots once", async () => {
     const projection = new PiProjection(model, [tool]);
     const iterator = projection.stream[Symbol.asyncIterator]();

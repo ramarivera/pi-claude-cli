@@ -25,8 +25,9 @@ import type {
 import { EventQueue, JsonLines } from "./framing.js";
 import { ControlChannel } from "./controls.js";
 import { PromptReceipts } from "../prompt-receipts.js";
+import { HOST_MCP_NAME, hostToolSystemPrompt } from "../host-tool-prompt.js";
 
-const HOST_SERVER = "host";
+const HOST_SERVER = HOST_MCP_NAME;
 const SUPPORTED_VERSION = "2.1.285";
 const MAX_FRAME = 1024 * 1024;
 const AUTH_OVERRIDES = [
@@ -406,7 +407,9 @@ class CliSession implements ClaudeDriverSession {
         JSON.stringify({ name: HOST_SERVER, socket: socketPath, tools }),
         { mode: 0o600 },
       ),
-      writeFile(promptFile, this.request.systemPrompt, { mode: 0o600 }),
+      writeFile(promptFile, hostToolSystemPrompt(this.request), {
+        mode: 0o600,
+      }),
       writeFile(mcpFile, JSON.stringify({ mcpServers }), { mode: 0o600 }),
     ]);
     const args = [

@@ -46,6 +46,24 @@ Both OMP smoke cases also run one real native background bash job. An owned cont
 
 Before publishing, select `PI_CLAUDE_SOURCE_SMOKE_E2E=1` to run the same behavioral checks against source entrypoints and isolated configuration, with distinct source provenance. `PI_CLAUDE_SMOKE_HOST=omp` selects only OMP; omit it to include Pi. Source checks don't establish installed delivery.
 
+Check native tool discovery using the default host prompt, with no MCP names or editing grammar supplied in the request:
+
+```nu
+with-env { PI_CLAUDE_TOOL_DISCOVERY_E2E: "1" } { node --test tests/e2e/tool-discovery.test.mjs }
+with-env { PI_CLAUDE_TOOL_DISCOVERY_E2E: "1", PI_CLAUDE_TOOL_DISCOVERY_INSTALLED: "1" } { node --test tests/e2e/tool-discovery.test.mjs }
+```
+
+Each of the four cases requires native read/edit/write exactly once, successful correlated results, exact edited/created file bytes, and no shell fallback or claims that these tools are unavailable. Installed mode loads the exact installed entrypoint in isolated configuration; the separate managed smoke above proves package discovery.
+
+Measure Anthropic cache reads separately from session identity:
+
+```nu
+with-env { PI_CLAUDE_CACHE_E2E: "1" } { node --test tests/e2e/cache.test.mjs }
+with-env { PI_CLAUDE_CACHE_E2E: "1", PI_CLAUDE_CACHE_INSTALLED: "1" } { node --test tests/e2e/cache.test.mjs }
+```
+
+This uses the default native host prompt and a synthetic reference prefix above Haiku 4.5's cache minimum. Four turns include two no-tool warm follow-ups around a real native bash call whose arguments a native hook rewrites. The warm turns must retain a nonshrinking large cached prefix, write a small suffix and keep the same Claude session through the correlated tool result. It doesn't infer billing savings from estimated cost, or claim persisted-session restoration after a restart. These checks consume account resources and fail on quota/authentication errors. Case selectors `PI_CLAUDE_TOOL_DISCOVERY_CASE` and `PI_CLAUDE_CACHE_CASE` accept `pi+cli`, `pi+sdk`, `omp+cli`, or `omp+sdk` for bounded reruns. See [session/cache audit](research/claude-session-cache.md).
+
 For the steering release, verify the same four host/driver combinations with a native tool held open and a queued correction:
 
 ```nu

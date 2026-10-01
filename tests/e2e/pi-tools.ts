@@ -5,6 +5,7 @@ import {
   nativeOutput,
   providerPrompt,
   record,
+  rewriteCacheTool,
   response,
   sentinel,
   slow,
@@ -35,6 +36,7 @@ export default function register(api: ExtensionAPI): void {
     else steeringAdmission(data);
   });
   api.on("tool_execution_start", (event) => record("tool-start", event));
+  api.on("tool_call", rewriteCacheTool);
   api.on("tool_execution_end", (event) => record("tool-end", event));
   api.registerTool({
     name: "pcc_sentinel",

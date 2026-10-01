@@ -41,3 +41,39 @@ The OMP adapter SHALL accept native developer notifications and preserve the rol
 - **WHEN** the native host delivers an async-result notification after its foreground response finishes
 - **THEN** the provider accepts the resulting developer input
 - **AND** the resident Claude query answers the notification and retains it for the next user request
+
+### Requirement: Native tool discovery across transports
+
+Both drivers SHALL preserve native host instructions and tool schemas while supplying the exact Claude callable name for each exposed host tool. They SHALL describe only actual exposed tools and configured built-ins.
+
+#### Scenario: Existing document edit and new document write
+
+- **WHEN** the user requests native read, edit and write with the default host prompt
+- **THEN** both transports expose an explicit native-name to MCP-name mapping
+- **AND** authenticated checks require successful native results and exact file bytes without shell fallback or tool-unavailable claims
+
+### Requirement: Measured cache verification
+
+Cache verification SHALL distinguish resident session reuse from Anthropic prompt cache hits. Matching host rounds SHALL retain their existing driver query. A paid cache check SHALL use a synthetic prefix above the model's minimum cacheable size and inspect cache usage on consecutive native turns, together with stable session identity. Historical measurements SHALL be labelled with their production fingerprint; quota failures SHALL remain failed validation rather than passing or being silently skipped.
+
+#### Scenario: Stable warm native follow-ups
+
+- **WHEN** four authenticated turns use unchanged native configuration within the cache lifetime, including a native tool-hook argument revision
+- **THEN** the same Claude query handles all turns and the intervening correlated tool result
+- **AND** both no-tool warm follow-ups reuse a nonshrinking large cached prefix with a small newly written suffix
+- **AND** the check doesn't claim persisted-session restoration after a process restart
+
+### Requirement: Preserve native history acknowledgements
+
+Native argument revisions SHALL acknowledge only newly completed, correlated, released proposals with identical call IDs and names. Other message fields and previously recorded history SHALL remain exact. OMP redacted-thinking projection and normalization SHALL preserve the opaque bytes and the existing neutral history digest.
+
+#### Scenario: Native hook changes pending bash arguments
+
+- **WHEN** the host records revised arguments for a newly completed pending bash call
+- **THEN** the correlated result reaches the original resident Claude query once
+- **AND** a later change to already acknowledged history still requires invalidation
+
+#### Scenario: OMP records redacted thinking
+
+- **WHEN** native streaming or snapshot projection emits redacted thinking
+- **THEN** its opaque data survives normalization with the original neutral message digest

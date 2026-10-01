@@ -264,6 +264,7 @@ function permission(
 function reconcile(
   expected: readonly TranscriptMessage[],
   appended: readonly TranscriptMessage[],
+  argumentRevisions: ReadonlyMap<string, HostToolCall>,
 ): TranscriptMessage[] | undefined {
   const remaining = [...expected];
   for (const entry of appended) {
@@ -277,11 +278,48 @@ function reconcile(
       if (index < 0) return;
       remaining.splice(index, 1);
     } else {
-      if (!remaining[0] || messageDigest(remaining[0]) !== hash) return;
+      if (
+        !remaining[0] ||
+        !acknowledgesMessage(remaining[0], entry, argumentRevisions)
+      )
+        return;
       remaining.shift();
     }
   }
   return remaining;
+}
+
+/**
+ * Host hooks can revise current call arguments before recording the assistant.
+ * Only newly correlated results authorize this comparison; the rest of the
+ * recorded message and all previously acknowledged history still match exactly.
+ */
+function acknowledgesMessage(
+  expected: TranscriptMessage,
+  recorded: TranscriptMessage,
+  argumentRevisions: ReadonlyMap<string, HostToolCall>,
+): boolean {
+  if (messageDigest(expected) === messageDigest(recorded)) return true;
+  if (
+    expected.role !== "assistant" ||
+    recorded.role !== "assistant" ||
+    expected.content.length !== recorded.content.length
+  )
+    return false;
+  const content = recorded.content.map((block, index) => {
+    const original = expected.content[index];
+    if (
+      block.type !== "tool_call" ||
+      original.type !== "tool_call" ||
+      block.id !== original.id ||
+      block.name !== original.name
+    )
+      return block;
+    const proposal = argumentRevisions.get(original.id);
+    if (!proposal || digest(proposal) !== digest(original)) return block;
+    return { ...block, arguments: original.arguments };
+  });
+  return messageDigest(expected) === messageDigest({ ...recorded, content });
 }
 
 /** The selected driver is the only transport; no cross-driver retry or global state. */
@@ -1336,6 +1374,7 @@ export function createClaudeRuntime(
     if (previous?.failure && request.input.kind === "tool-results")
       throw previous.failure;
     const seen = new Map<string, HostToolResult>();
+    const argumentRevisions = new Map<string, HostToolCall>();
     for (const result of request.input.kind === "tool-results"
       ? request.input.results
       : []) {
@@ -1360,6 +1399,8 @@ export function createClaudeRuntime(
             "tool-correlation",
             `Uncorrelated host result ${result.toolCallId}`,
           );
+        if (pending.released)
+          argumentRevisions.set(result.toolCallId, pending.call);
       }
     }
     const appendedResults = incomingResults.filter(
@@ -1397,7 +1438,7 @@ export function createClaudeRuntime(
     const append = previous
       ? history.slice(previous.identity.history.messages.length)
       : [];
-    const remaining = reconcile(candidateExpected, append);
+    const remaining = reconcile(candidateExpected, append, argumentRevisions);
     const unrecorded = new Set(
       appendedResults.map((result) => result.toolCallId),
     );

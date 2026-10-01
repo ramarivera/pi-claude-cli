@@ -109,6 +109,64 @@ async function open(
 }
 
 describe("official SDK query (offline doubles)", () => {
+  it("maps native edit/write instructions to the exposed host MCP tools", async () => {
+    const r = request();
+    r.systemPrompt =
+      "Use edit for existing files and write for new files. Keep literal mcp__host__edit examples.";
+    r.tools = ["edit", "write", "read", "bash", "mcp__remote__query"].map(
+      (name) => ({
+        owner: "host" as const,
+        name,
+        description: `Native ${name} tool`,
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      }),
+    );
+    const { t } = await open(transport(), r);
+    const prompt = t.options.systemPrompt as string;
+    expect(prompt.startsWith(r.systemPrompt + "\n\n")).toBe(true);
+    for (const tool of r.tools)
+      expect(prompt).toContain(`"${tool.name}" -> "mcp__host__${tool.name}"`);
+    expect(t.options.allowedTools).toEqual(
+      r.tools.map((tool) => `mcp__host__${tool.name}`),
+    );
+    expect(prompt).toContain(
+      "Claude built-in tools are disabled for this session.",
+    );
+    expect(prompt).toContain(
+      "Use the mapped Claude callable name even when host instructions or history use the native name.",
+    );
+    expect(r.systemPrompt).toBe(
+      "Use edit for existing files and write for new files. Keep literal mcp__host__edit examples.",
+    );
+  });
+
+  it("lists only exposed host tools and the configured Claude built-ins", async () => {
+    const r = request();
+    r.tools = [
+      {
+        owner: "host",
+        name: "read",
+        description: "Read only",
+        inputSchema: { type: "object" },
+      },
+    ];
+    r.settings.claudeTools = ["Bash", "WebSearch"];
+    const { t } = await open(transport(), r);
+    const prompt = t.options.systemPrompt as string;
+    expect(prompt).toContain('"read" -> "mcp__host__read"');
+    expect(prompt).not.toContain("mcp__host__edit");
+    expect(prompt).not.toContain("mcp__host__write");
+    expect(prompt).toContain(
+      'Configured Claude built-in tools: ["Bash","WebSearch"].',
+    );
+    expect(prompt).not.toContain("built-in tools are disabled");
+    expect(t.options.tools).toEqual(["Bash", "WebSearch"]);
+  });
+
   it("waits for native admission of same-turn next input, beyond the SDK transport write", async () => {
     const { session, t } = await open();
     const events = session.events[Symbol.asyncIterator]();

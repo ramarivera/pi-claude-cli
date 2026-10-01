@@ -25,6 +25,7 @@ import { HostMcpBridge, HOST_MCP_NAME } from "./host-mcp.js";
 import { jsonObject } from "./json.js";
 import { sdkError } from "./diagnostics.js";
 import { PromptReceipts } from "../prompt-receipts.js";
+import { hostToolName, hostToolSystemPrompt } from "../host-tool-prompt.js";
 
 /** Narrow public lifecycle seam for labelled offline transport doubles. */
 export interface SdkQuery extends AsyncIterable<unknown> {
@@ -196,7 +197,7 @@ class SdkSession implements ClaudeDriverSession {
     const sdkOptions: Options = {
       cwd: request.identity.cwd,
       model: request.model,
-      systemPrompt: request.systemPrompt,
+      systemPrompt: hostToolSystemPrompt(request),
       pathToClaudeCodeExecutable: options.executable,
       env: {
         ...this.env,
@@ -215,9 +216,7 @@ class SdkSession implements ClaudeDriverSession {
       tools: [...request.settings.claudeTools],
       strictMcpConfig: true,
       mcpServers,
-      allowedTools: request.tools.map(
-        (tool) => `mcp__${HOST_MCP_NAME}__${tool.name}`,
-      ),
+      allowedTools: request.tools.map((tool) => hostToolName(tool.name)),
       canUseTool: (toolName, input, context) => {
         if (this.hostMcp.ownsPermission(toolName, context.mcpServer))
           return Promise.resolve({ behavior: "allow", updatedInput: input });

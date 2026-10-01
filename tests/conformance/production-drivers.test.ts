@@ -407,13 +407,18 @@ for (const kind of ["cli", "sdk"] satisfies DriverKind[]) {
       );
       if (kind === "cli") {
         const receipt = await t.captures[0].readReceipt();
-        expect(receipt.systemPrompt).toBe(firstRequest.systemPrompt);
+        expect(
+          receipt.systemPrompt.startsWith(firstRequest.systemPrompt + "\n\n"),
+        ).toBe(true);
+        expect(receipt.systemPrompt).toContain('"edit" -> "mcp__host__edit"');
         expect(receipt.prompts).toHaveLength(2);
         expect(receipt.args).toContain("--strict-mcp-config");
       } else {
-        expect(t.captures[0].options?.systemPrompt).toBe(
-          firstRequest.systemPrompt,
+        const prompt = t.captures[0].options?.systemPrompt as string;
+        expect(prompt.startsWith(firstRequest.systemPrompt + "\n\n")).toBe(
+          true,
         );
+        expect(prompt).toContain('"edit" -> "mcp__host__edit"');
         expect(t.captures[0].submitted).toHaveLength(2);
       }
     });

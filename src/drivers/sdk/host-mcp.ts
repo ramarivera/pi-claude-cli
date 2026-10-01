@@ -13,8 +13,9 @@ import type {
 } from "../../contracts/index.js";
 import { fingerprint, jsonObject } from "./json.js";
 import { DrainingMcpServer } from "./draining-server.js";
+import { HOST_MCP_NAME, hostToolName } from "../host-tool-prompt.js";
 
-export const HOST_MCP_NAME = "host";
+export { HOST_MCP_NAME } from "../host-tool-prompt.js";
 export const TOOL_USE_ID_META = "claudecode/toolUseId";
 interface PendingCall {
   call: HostToolCall;
@@ -113,9 +114,7 @@ export class HostMcpBridge {
     return (
       provenance?.source === "sdk" &&
       provenance.name === HOST_MCP_NAME &&
-      [...this.tools.keys()].some(
-        (name) => toolName === `mcp__${HOST_MCP_NAME}__${name}`,
-      )
+      [...this.tools.keys()].some((name) => toolName === hostToolName(name))
     );
   }
 

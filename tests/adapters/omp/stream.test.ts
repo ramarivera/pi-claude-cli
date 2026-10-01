@@ -7,7 +7,12 @@ import type {
   ClaudeRuntime,
   HostRoundRequest,
 } from "../../../src/contracts/index.js";
-import { toRequest } from "../../../src/adapters/omp/request.js";
+import {
+  normalizeTranscript,
+  toRequest,
+} from "../../../src/adapters/omp/request.js";
+import { createClaudeEventNormalizer } from "../../../src/core/normalizer.js";
+import { messageDigest } from "../../../src/core/history.js";
 import { readRuntimeConfiguration } from "../../../entrypoints/config.js";
 // Use OMP's actual stream implementation while keeping Bun-only provider modules out of Node's offline runner.
 vi.mock(
@@ -71,6 +76,84 @@ async function collect(source: ReturnType<typeof projectRound>) {
 }
 
 describe("native OMP stream projection", () => {
+  it.each(["snapshot", "stream"])(
+    "preserves redacted thinking history from a native %s",
+    async (shape) => {
+      const normalizer = createClaudeEventNormalizer({
+        tools: [],
+        hostMcpServerName: "host",
+        requestedModel: model.id,
+      });
+      const raw =
+        shape === "snapshot"
+          ? {
+              type: "assistant",
+              uuid: "redacted-snapshot",
+              message: {
+                id: "redacted-message",
+                content: [{ type: "redacted_thinking", data: "opaque-bytes" }],
+                stop_reason: "end_turn",
+              },
+            }
+          : {
+              type: "stream_event",
+              event: {
+                type: "content_block_start",
+                index: 0,
+                content_block: {
+                  type: "redacted_thinking",
+                  data: "opaque-bytes",
+                },
+              },
+            };
+      if (shape === "stream")
+        normalizer.normalize({
+          type: "stream_event",
+          event: { type: "message_start", message: { id: "redacted-message" } },
+        });
+      const normalized = normalizer.normalize(raw);
+      const contentEvent = normalized.find(
+        (event) =>
+          event.type === "assistant_snapshot" || event.type === "content_start",
+      );
+      expect(contentEvent).toBeDefined();
+      if (
+        !contentEvent ||
+        (contentEvent.type !== "assistant_snapshot" &&
+          contentEvent.type !== "content_start")
+      )
+        throw new Error("Missing redacted content");
+      const content =
+        contentEvent.type === "assistant_snapshot"
+          ? contentEvent.content
+          : [contentEvent.content];
+      const { message } = await collect(
+        projectRound(
+          model,
+          request,
+          {},
+          runtime([
+            ...normalized.map(driver),
+            {
+              type: "round_end",
+              roundId: "round",
+              reason: "stop",
+              content,
+              pendingToolCallIds: [],
+            },
+          ]),
+          { driver: "sdk" },
+        ),
+      );
+      expect(message.content).toEqual([
+        { type: "redactedThinking", data: "opaque-bytes" },
+      ]);
+      const acknowledged = normalizeTranscript({ messages: [message] })[0];
+      expect(messageDigest(acknowledged)).toBe(
+        messageDigest({ role: "assistant", content, stopReason: "stop" }),
+      );
+    },
+  );
   it("waits through startup diagnostics for one authoritative response ID", async () => {
     const onResponse = vi.fn();
     const observe = vi.fn((event: ClaudeDriverEvent) => {

@@ -18,6 +18,24 @@ export function record(type: string, data: unknown): void {
   appendFileSync(path, JSON.stringify({ type, data }) + "\n", { mode: 0o600 });
 }
 
+/** Exercise native hook revisions only for the cache test's exact fixture. */
+export function rewriteCacheTool(event: {
+  toolName: string;
+  toolCallId: string;
+  input: unknown;
+}): void {
+  const from = process.env.PCC_E2E_REWRITE_FROM;
+  const to = process.env.PCC_E2E_REWRITE_TO;
+  if (!from || !to || event.toolName !== "bash") return;
+  const input = object(event.input);
+  if (input.command !== from) return;
+  input.command = to;
+  record("native-hook-rewrite", {
+    toolCallId: event.toolCallId,
+    toolName: event.toolName,
+  });
+}
+
 export function response(
   status: number,
   headers: Record<string, string>,

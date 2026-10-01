@@ -742,6 +742,342 @@ describe("Claude runtime session ownership (offline)", () => {
     await runtime.closeAll();
   });
 
+  it.each([false, true])(
+    "keeps a correlated result resident after OMP records hook-revised tool arguments: %s",
+    async (reviseArguments) => {
+      const driver = new OfflineDriver();
+      const runtime = createClaudeRuntime({ driver });
+      const proposal: HostToolCall = {
+        type: "tool_call",
+        id: "native-bash-call",
+        name: "bash",
+        arguments: { command: "native" },
+      };
+      const result: HostToolResult = {
+        toolCallId: proposal.id,
+        toolName: proposal.name,
+        content: [{ type: "text", text: "command completed" }],
+        isError: false,
+      };
+      const tools = [
+        {
+          owner: "host" as const,
+          name: "bash",
+          description: "Native bash",
+          inputSchema: { type: "object" },
+        },
+      ];
+      driver.setup = (session, opened) => {
+        const finish = () => {
+          step(session, "after-native-result", [
+            { type: "text", text: "done" },
+          ]);
+          success(session);
+        };
+        session.onPrompt = () => {
+          if (opened.resume.mode !== "fresh" || session.prompts.length > 1)
+            return finish();
+          step(session, "native-proposal", [proposal]);
+          session.park(proposal);
+        };
+        session.onResults = finish;
+      };
+      try {
+        const first = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                tools,
+                transcript: [user],
+              }),
+            ),
+          ),
+        );
+        expect(first.reason).toBe("toolUse");
+        // OMP prepareToolCallDispatch persists the hook revision in its own
+        // assistant message. Adapter projection creates an independent copy.
+        const recordedContent = structuredClone(first.content);
+        const recordedCall = recordedContent.find(
+          (block) => block.type === "tool_call",
+        )!;
+        if (recordedCall.type !== "tool_call")
+          throw new Error("Missing native proposal");
+        if (reviseArguments) recordedCall.arguments = { command: "rewritten" };
+        const second = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                tools,
+                roundId: "after-hook",
+                transcript: [
+                  user,
+                  assistant(recordedContent, "toolUse"),
+                  { role: "tool_result", ...result },
+                ],
+                input: { kind: "tool-results", results: [result] },
+              }),
+            ),
+          ),
+        );
+        expect(second.reason).toBe("stop");
+        expect(driver.opened.map((opened) => opened.resume.mode)).toEqual([
+          "fresh",
+        ]);
+        expect(driver.sessions[0].results).toEqual([result]);
+        expect(proposal.arguments).toEqual({ command: "native" });
+        const next = {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "next" }],
+        };
+        const third = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                tools,
+                roundId: "next-user-turn",
+                transcript: [
+                  user,
+                  assistant(recordedContent, "toolUse"),
+                  { role: "tool_result", ...result },
+                  assistant(second.content),
+                  next,
+                ],
+                input: { kind: "prompt", content: next.content },
+              }),
+            ),
+          ),
+        );
+        expect(third.reason).toBe("stop");
+        expect(driver.opened).toHaveLength(1);
+        expect(driver.sessions[0].prompts).toHaveLength(2);
+      } finally {
+        await runtime.closeAll();
+      }
+    },
+  );
+
+  it.each([
+    "id",
+    "name",
+    "text",
+    "thinking",
+    "signature",
+    "order",
+    "block-count",
+  ])(
+    "rebuilds when hook-revised arguments accompany an unrelated assistant %s change",
+    async (change) => {
+      const driver = new OfflineDriver();
+      const runtime = createClaudeRuntime({ driver });
+      const finish = (session: OfflineSession) => {
+        step(session, "done", [{ type: "text", text: "done" }]);
+        success(session);
+      };
+      try {
+        const pending = collect(runtime.streamRound(request()));
+        const session = await started(driver);
+        step(session, "native-batch", [
+          { type: "text", text: "tool plan" },
+          {
+            type: "thinking",
+            thinking: "native thinking",
+            signature: "signed",
+          },
+          call("a"),
+          call("b"),
+        ]);
+        session.park(call("a"));
+        session.park(call("b"));
+        const first = outcome(await pending);
+        const recorded = [...structuredClone(first.content)];
+        const revised = recorded[2] as HostToolCall;
+        revised.arguments = { path: "hook-rewritten" };
+        if (change === "id") revised.id = "foreign-id";
+        if (change === "name") revised.name = "foreign-tool";
+        if (change === "text")
+          recorded[0] = { type: "text", text: "changed plan" };
+        if (change === "thinking")
+          recorded[1] = {
+            type: "thinking",
+            thinking: "different",
+            signature: "signed",
+          };
+        if (change === "signature")
+          recorded[1] = {
+            type: "thinking",
+            thinking: "native thinking",
+            signature: "changed",
+          };
+        if (change === "order")
+          [recorded[2], recorded[3]] = [recorded[3], recorded[2]];
+        if (change === "block-count") recorded.push(call("a"));
+        driver.setup = (next) => {
+          next.onPrompt = () => finish(next);
+        };
+        session.onResults = () => finish(session);
+        const results = [toolResult("a"), toolResult("b")];
+        const second = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "invalid-recording",
+                transcript: [
+                  user,
+                  assistant(recorded, "toolUse"),
+                  ...results.map((result) => ({
+                    role: "tool_result" as const,
+                    ...result,
+                  })),
+                ],
+                input: { kind: "tool-results", results },
+              }),
+            ),
+          ),
+        );
+        expect(second.reason).toBe("stop");
+        expect(driver.opened.map((opened) => opened.resume.mode)).toEqual([
+          "fresh",
+          "replay",
+        ]);
+        expect(session.results).toEqual([]);
+      } finally {
+        await runtime.closeAll();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "authorizes parallel argument revisions only for calls with current correlated results: unmatched revision %s",
+    async (reviseUnmatched) => {
+      const driver = new OfflineDriver();
+      const runtime = createClaudeRuntime({ driver });
+      let continuation: Promise<ClaudeRoundEvent[]> | undefined;
+      try {
+        const pending = collect(runtime.streamRound(request()));
+        const session = await started(driver);
+        step(session, "native-batch", [call("a"), call("b")]);
+        session.park(call("a"));
+        session.park(call("b"));
+        const first = outcome(await pending);
+        const recorded = structuredClone(first.content) as HostToolCall[];
+        recorded[0].arguments = { path: "hook-rewritten-a" };
+        if (reviseUnmatched)
+          recorded[1].arguments = { path: "hook-rewritten-b" };
+        driver.setup = (next) => {
+          next.onPrompt = () => {
+            step(next, "replay-done", [{ type: "text", text: "done" }]);
+            success(next);
+          };
+        };
+        const result = toolResult("a");
+        continuation = collect(
+          runtime.streamRound(
+            request({
+              roundId: "partial-current-result",
+              transcript: [
+                user,
+                assistant(recorded, "toolUse"),
+                { role: "tool_result", ...result },
+              ],
+              input: { kind: "tool-results", results: [result] },
+            }),
+          ),
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(driver.opened.map((opened) => opened.resume.mode)).toEqual(
+          reviseUnmatched ? ["fresh", "replay"] : ["fresh"],
+        );
+        expect(session.results).toEqual(reviseUnmatched ? [] : [result]);
+        expect(session.closeCount).toBe(reviseUnmatched ? 1 : 0);
+      } finally {
+        await runtime.closeAll();
+        if (continuation) await continuation;
+      }
+    },
+  );
+
+  it.each(["next-user", "duplicate-result"])(
+    "rejects delayed revisions to already acknowledged tool arguments on %s input",
+    async (inputKind) => {
+      const driver = new OfflineDriver();
+      const runtime = createClaudeRuntime({ driver });
+      const finish = (session: OfflineSession) => {
+        step(session, `done-${session.prompts.length}`, [
+          { type: "text", text: "done" },
+        ]);
+        success(session);
+      };
+      try {
+        const pending = collect(runtime.streamRound(request()));
+        const session = await started(driver);
+        step(session, "native-batch", [call("a")]);
+        session.park(call("a"));
+        const first = outcome(await pending);
+        session.onResults = () => finish(session);
+        driver.setup = (next) => {
+          next.onPrompt = () => finish(next);
+        };
+        const result = toolResult("a");
+        const recorded = structuredClone(first.content) as HostToolCall[];
+        recorded[0].arguments = { path: "first-hook-revision" };
+        const history: TranscriptMessage[] = [
+          user,
+          assistant(recorded, "toolUse"),
+          { role: "tool_result", ...result },
+        ];
+        const second = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "acknowledge-first-revision",
+                transcript: history,
+                input: { kind: "tool-results", results: [result] },
+              }),
+            ),
+          ),
+        );
+        expect(driver.opened).toHaveLength(1);
+        const delayed = structuredClone(history);
+        const historical = delayed[1];
+        if (historical.role !== "assistant")
+          throw new Error("Missing historical assistant");
+        (historical.content[0] as HostToolCall).arguments = {
+          path: "late-revision",
+        };
+        const next = {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "next" }],
+        };
+        const third = outcome(
+          await collect(
+            runtime.streamRound(
+              request({
+                roundId: "delayed-mutation",
+                transcript: [
+                  ...delayed,
+                  assistant(second.content),
+                  ...(inputKind === "next-user" ? [next] : []),
+                ],
+                input:
+                  inputKind === "next-user"
+                    ? { kind: "prompt", content: next.content }
+                    : { kind: "tool-results", results: [result] },
+              }),
+            ),
+          ),
+        );
+        expect(third.reason).toBe("stop");
+        expect(driver.opened.map((opened) => opened.resume.mode)).toEqual([
+          "fresh",
+          "replay",
+        ]);
+        expect(session.results).toEqual([result]);
+      } finally {
+        await runtime.closeAll();
+      }
+    },
+  );
+
   it("releases a completed native batch after its first matched MCP call parks", async () => {
     const driver = new OfflineDriver(),
       runtime = createClaudeRuntime({ driver });

@@ -29,7 +29,7 @@ function nativeContent(
   switch (block.type) {
     case "thinking":
       return block.redacted
-        ? { type: "redactedThinking", data: block.signature ?? "" }
+        ? { type: "redactedThinking", data: block.thinking }
         : {
             type: "thinking",
             thinking: block.thinking,
