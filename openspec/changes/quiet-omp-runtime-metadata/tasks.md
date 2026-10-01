@@ -13,5 +13,6 @@ Beads: `pcc-22n`, `pcc-tvo`, `pcc-6vb`, `pcc-k4z`. Execution evidence belongs in
 - [x] Finish independent Sol 6.1 cache audit against BB/T3Code and record source versus live evidence.
 - [x] Reproduce and repair native hook-argument acknowledgement and OMP redacted-thinking history mismatches.
 - [ ] Run measured native warm-cache checks on the final production fingerprint.
-- [ ] Publish 0.4.4 and verify artifact integrity/provenance.
-- [ ] Bump managed pins, materialize only this package and verify installed native cases.
+- [x] Publish 0.4.4 and verify artifact integrity/provenance (user lifted the live-validation hold).
+- [x] Bump managed pins and materialize only the verified package with other dependency bytes preserved.
+- [ ] Complete every installed native case without cleanup/auth failures (Pi SDK follow-up `pcc-oc0`; OMP CLI/SDK passed).

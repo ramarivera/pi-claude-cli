@@ -51,10 +51,10 @@ for (const name of CASES)
       const marker = `CACHE_${randomUUID().replaceAll("-", "")}`;
       const env = hostEnvironment(kind, driver, sandbox, marker);
       env.PCC_E2E_BOUNDARY = "1";
-      const originalCommand = `printf '%s\\n' ORIGINAL_${marker}`;
+      const originalCommand = `echo ORIGINAL_${marker}`;
       const revisedMarker = `REWRITTEN_${marker}`;
       env.PCC_E2E_REWRITE_FROM = originalCommand;
-      env.PCC_E2E_REWRITE_TO = `printf '%s\\n' ${revisedMarker}`;
+      env.PCC_E2E_REWRITE_TO = `echo ${revisedMarker}`;
       const versions = preflight(kind, env);
       const args = hostArgs(kind, sandbox, "unused");
       args.splice(args.indexOf("--system-prompt"), 2);
