@@ -466,6 +466,46 @@ describe("Claude runtime session ownership (offline)", () => {
     },
   );
 
+  it("resumes a cleanly closed session through native persistence when the driver supports it", async () => {
+    const driver = new OfflineDriver();
+    driver.capabilities.persistedResume = true;
+    driver.setup = (session) => {
+      session.onPrompt = () => {
+        step(session, `m${session.prompts.length}`, [
+          { type: "text", text: "hello" },
+        ]);
+        success(session);
+      };
+    };
+    const runtime = createClaudeRuntime({ driver, persistedResume: true });
+    const first = outcome(
+      await collect(runtime.streamRound(request({ transcript: [user] }))),
+    );
+    await runtime.close("host");
+    const nextUser: TranscriptMessage = {
+      role: "user",
+      content: [{ type: "text", text: "next" }],
+    };
+    const second = outcome(
+      await collect(
+        runtime.streamRound(
+          request({
+            roundId: "r2",
+            transcript: [user, assistant(first.content), nextUser],
+            input: { kind: "prompt", content: nextUser.content },
+          }),
+        ),
+      ),
+    );
+    expect(second.reason).toBe("stop");
+    expect(driver.opened).toHaveLength(2);
+    expect(driver.opened[1].resume).toMatchObject({
+      mode: "resume",
+      restoration: "native-persisted",
+      claudeSessionId: "claude-1",
+    });
+  });
+
   it.each([false, true])(
     "keeps a developer background wake and its image split resident: %s",
     async (withImage) => {

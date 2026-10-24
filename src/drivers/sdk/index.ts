@@ -164,6 +164,20 @@ class SdkSession implements ClaudeDriverSession {
         "Resident sessions must reuse their existing SDK driver session",
       );
     }
+    if (this.env.PI_CLAUDE_RESUME_DIAGNOSTICS === "1")
+      this.emit({
+        type: "observation",
+        family: "diagnostic",
+        subtype: "session-resume",
+        data: {
+          mode: request.resume.mode,
+          restoration: request.resume.restoration,
+          reason: request.resume.reason,
+          ...(request.resume.mode === "resume"
+            ? { claudeSessionId: request.resume.claudeSessionId }
+            : {}),
+        },
+      });
     const mcpServers: Record<string, McpServerConfig> = {
       [HOST_MCP_NAME]: {
         type: "sdk",

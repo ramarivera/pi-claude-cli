@@ -86,6 +86,8 @@ Both entrypoints use the same environment settings. Restart/reload the extension
 | `PI_CLAUDE_INTERNAL_TOOLS`        | `[]`           | JSON array of explicitly enabled Claude tool names                                                       |
 | `PI_CLAUDE_MCP_CONFIG`            | Unset          | File containing explicitly configured user `mcpServers`                                                  |
 | `PI_CLAUDE_FORWARD_SUBAGENT_TEXT` | `0`            | Set `1` to forward attributed Claude subagent text                                                       |
+| `PI_CLAUDE_RESUME_DIAGNOSTICS`    | `0`            | Set `1` to log each session's resume mode, restoration and rebuild reason                                |
+| `PI_CLAUDE_NATIVE_RESUME`         | `0`            | Set `1` to use SDK native persistence after a clean close instead of replaying host history              |
 
 Login mode rejects inherited API-key, auth-token, endpoint and cloud-provider overrides rather than silently changing authentication or billing. `CLAUDE_CONFIG_DIR` can select the official runtime's existing login configuration. API-key mode requires `ANTHROPIC_API_KEY`; `ANTHROPIC_BASE_URL` is optional in that mode. No token is copied into host auth storage.
 

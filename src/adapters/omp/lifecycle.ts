@@ -364,6 +364,7 @@ export class OmpLifecycle {
       hostAgentId: diagnosticId(state.context.agent.id),
       sequence: event.sequence,
       attribution: Object.fromEntries(attribution),
+      ...(event.family === "diagnostic" ? { data: event.data } : {}),
     });
     api.events.emit("pi-claude-cli:observation", {
       owner: "claude",

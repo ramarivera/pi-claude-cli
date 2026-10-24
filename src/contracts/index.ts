@@ -523,6 +523,8 @@ export interface ClaudeRuntime {
 
 export interface ClaudeRuntimeOptions {
   driver: ClaudeDriver;
+  /** Opt in after verifying native persistence against the host tool inventory. */
+  persistedResume?: boolean;
 }
 export type ClaudeRuntimeFactory = (
   options: ClaudeRuntimeOptions,

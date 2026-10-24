@@ -21,5 +21,9 @@ export async function createConfiguredRuntime(
     configuration.driver === "cli"
       ? (await import("../src/drivers/cli/index.js")).createCliDriver(options)
       : (await import("../src/drivers/sdk/index.js")).createSdkDriver(options);
-  return createClaudeRuntime({ driver });
+  return createClaudeRuntime({
+    driver,
+    persistedResume:
+      configuration.driverOptions.environment?.PI_CLAUDE_NATIVE_RESUME === "1",
+  });
 }

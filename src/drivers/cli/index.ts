@@ -330,6 +330,18 @@ class CliSession implements ClaudeDriverSession {
     executable: string,
     env: NodeJS.ProcessEnv,
   ): Promise<void> {
+    if (env.PI_CLAUDE_RESUME_DIAGNOSTICS === "1")
+      this.emit({
+        type: "observation",
+        family: "diagnostic",
+        subtype: "session-resume",
+        data: {
+          mode: this.request.resume.mode,
+          restoration: this.request.resume.restoration,
+          reason: this.request.resume.reason,
+        },
+        attribution: {},
+      });
     this.diagnosticSecrets = Object.entries(env)
       .filter(
         ([key, value]) =>

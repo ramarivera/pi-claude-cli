@@ -661,6 +661,35 @@ describe("official SDK query (offline doubles)", () => {
     expect(t.close).toHaveBeenCalledOnce();
   });
 
+  it("reports the chosen resume plan before transport initialization", async () => {
+    const r = request();
+    r.resume = {
+      mode: "replay",
+      restoration: "user-history-replay",
+      reason: "history invalidated: compaction",
+      replayTranscript: [],
+    };
+    const { session } = await open(transport(), r, {
+      ...cleanEnvironment,
+      PI_CLAUDE_RESUME_DIAGNOSTICS: "1",
+    });
+    const events = [];
+    for await (const event of session.events) {
+      events.push(event);
+      break;
+    }
+    expect(events[0]).toMatchObject({
+      type: "observation",
+      family: "diagnostic",
+      subtype: "session-resume",
+      data: {
+        mode: "replay",
+        restoration: "user-history-replay",
+        reason: "history invalidated: compaction",
+      },
+    });
+  });
+
   it("routes permission by its own request ID and cancels pending elicitation on close", async () => {
     const { session, t } = await open();
     const events = session.events[Symbol.asyncIterator]();

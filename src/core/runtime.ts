@@ -1458,6 +1458,12 @@ export function createClaudeRuntime(
         options.driver.capabilities.residentSessions
           ? previous.identity.claudeSessionId
           : undefined,
+      persistedSessionId:
+        previous &&
+        options.persistedResume === true &&
+        options.driver.capabilities.persistedResume
+          ? previous.identity.claudeSessionId
+          : undefined,
       invalidated: invalidated.get(key) ?? previous?.invalidated,
       acknowledgedAppendDigests: acknowledgedHistory,
     });
@@ -1511,9 +1517,11 @@ export function createClaudeRuntime(
       ];
     }
     const fresh = identity(request, options.driver.kind, history);
+    // A resident plan returns above when `previous` exists and is unreachable
+    // without a previous identity, so only persisted resume can reach here.
     const freshResume =
-      resume.mode === "resident" || resume.mode === "resume"
-        ? resolveResumePlan(undefined, fresh, {})
+      resume.mode === "resume"
+        ? resume
         : fresh.history.messages.length
           ? {
               mode: "replay" as const,
